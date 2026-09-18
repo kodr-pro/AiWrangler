@@ -1,0 +1,20 @@
+{
+  // Fixture configuration for the AiWrangler verify suite. Corpus paths are
+  // relative to this file; super points at the repository root so history
+  // mining scans this repo itself.
+  "model": "jev-1.13.0",
+  "egress": { "semantic": true, "warnOncePerSession": false },
+  "corpus": {
+    "spec": "spec.md",
+    "rules": "rules.md",
+    "divergences": "divergences.md",
+    "questions": "questions.md",
+    "plan": "plan.md",
+    "whitepaper": "whitepaper.pdf"
+  },
+  "repos": {
+    "super": "../..",
+    "members": ["core", "net", "store", "worker", "api"],
+    "reviewed": ["core", "api", "net"]
+  }
+}

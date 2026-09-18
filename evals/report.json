@@ -1,0 +1,47 @@
+{
+  "ts": "2026-09-18T22:36:03.572Z",
+  "live": false,
+  "mined": 1,
+  "tp": 9,
+  "fn": 0,
+  "fp": 0,
+  "tn": 4,
+  "perRule": {
+    "RULE-1": {
+      "hit": 1,
+      "missed": 0
+    },
+    "RULE-6": {
+      "hit": 2,
+      "missed": 0
+    },
+    "RULE-7": {
+      "hit": 1,
+      "missed": 0
+    },
+    "RULE-2": {
+      "hit": 1,
+      "missed": 0
+    },
+    "RULE-8": {
+      "hit": 1,
+      "missed": 0
+    },
+    "RULE-10": {
+      "hit": 1,
+      "missed": 0
+    },
+    "HALLUC": {
+      "hit": 1,
+      "missed": 0
+    },
+    "RULE-3": {
+      "hit": 1,
+      "missed": 0
+    },
+    "SELFREPORT": {
+      "hit": 1,
+      "missed": 0
+    }
+  }
+}

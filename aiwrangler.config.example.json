@@ -1,0 +1,62 @@
+{
+  // AiWrangler example configuration.
+  // Copy to aiwrangler.config.json in the repository you want the gates to
+  // guard (that filename is gitignored in this repo on purpose: your corpus
+  // paths and repo layout are yours). All keys are optional; anything you
+  // omit falls back to the defaults shown here.
+  //
+  // Runtime overrides: AIWRANGLER_DISABLE=docDrift,ambiguity
+  //                    AIWRANGLER_POLICY=permissive  AIWRANGLER_EGRESS=off
+  "model": "jev-1.13.0",
+  "activePolicy": "strict",
+  "egress": {
+    // Sends task/diff/spec text to api.typesafe.ai (no-training per their
+    // docs). Set AIWRANGLER_EGRESS=off to degrade to deterministic-only.
+    "semantic": true,
+    "warnOncePerSession": true
+  },
+  "corpus": {
+    // Ground truth for the guarded project. Paths are relative to this file
+    // (~ and absolute paths also work). Missing files are skipped, so you can
+    // start with any subset and grow the corpus later. See README for the
+    // expected formats (spec sections, review rules, divergence register,
+    // open questions, plan one-way doors, whitepaper PDF).
+    "spec": "corpus/spec.md",
+    "rules": "corpus/rules.md",
+    "divergences": "corpus/divergences.md",
+    "questions": "corpus/questions.md",
+    "plan": "corpus/plan.md",
+    "docs": [],
+    "whitepaper": "corpus/whitepaper.pdf"
+  },
+  "gates": {
+    "plan": { "inSpec": true, "ambiguity": true, "openQuestions": true, "oneWayDoors": true },
+    "retrieval": { "rerank": true, "topK": 6 },
+    "check": {
+      "deterministic": true,
+      "battery": true,
+      "selfReport": true,
+      "testQuality": true,
+      "docDrift": true,
+      "injectionDefense": true
+    },
+    "security": { "trustBoundary": true, "severity": true, "alwaysHuman": ["keys", "secrets", "digests"] },
+    "loop": { "retryProgress": true, "errorSalience": true, "maxCycles": 3 },
+    "session": { "endAudit": true, "nudge": true, "maxNudges": 3 }
+  },
+  "policies": {
+    "strict": { "actionThreshold": 0.8, "reviewThreshold": 0.5 },
+    "permissive": { "actionThreshold": 0.9, "reviewThreshold": 0.35 }
+  },
+  "cache": { "dir": ".aiwrangler" },
+  "ledger": { "path": ".aiwrangler/ledger.jsonl" },
+  "repos": {
+    // Multi-repo workspaces: super is the workspace root, members are
+    // sub-repositories whose dirty files are also gated. Single-repo setup
+    // needs none of this; "." is the default for super.
+    "super": ".",
+    "members": [],
+    // Repos whose public API surface is treated as a commitment (RULE-2).
+    "reviewed": []
+  }
+}

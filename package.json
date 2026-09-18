@@ -1,0 +1,70 @@
+{
+  "name": "aiwrangler",
+  "version": "0.1.0",
+  "description": "Ground-truth guardrails for coding agents: deterministic checks plus calibrated semantic judgments against your own spec, rules, and rulings",
+  "type": "module",
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kodr-pro/AiWrangler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kodr-pro/AiWrangler/issues"
+  },
+  "homepage": "https://github.com/kodr-pro/AiWrangler#readme",
+  "keywords": [
+    "coding-agent",
+    "guardrails",
+    "code-review",
+    "ai-safety",
+    "opencode",
+    "static-analysis",
+    "developer-tools"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "aiwrangler-webui": "./dist/webui/bin.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./tools": {
+      "import": "./dist/tools.js",
+      "types": "./dist/tools.d.ts"
+    },
+    "./plugin": {
+      "import": "./dist/plugin.js",
+      "types": "./dist/plugin.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup && tsx scripts/build-webui.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.webui.json",
+    "webui": "node dist/webui/bin.js",
+    "verify:p0": "tsx scripts/verify-p0.ts",
+    "verify:p1": "tsx scripts/verify-p1.ts",
+    "verify:p2": "tsx scripts/verify-p2.ts",
+    "verify:p3": "tsx scripts/verify-p3.ts",
+    "verify:p4": "tsx scripts/verify-p4.ts",
+    "verify:p5": "tsx scripts/verify-p5.ts",
+    "verify:webui": "tsx scripts/verify-webui.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.4.3",
+    "@typesafe-ai/sdk": "^0.6.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.2",
+    "htm": "^3.1.1",
+    "preact": "^10.29.8",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

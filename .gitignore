@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.aiwrangler/
+.verify-fixture/
+evals/corpus/.aiwrangler/
+*.tsbuildinfo
+aiwrangler.config.json
+!evals/corpus/aiwrangler.config.json
