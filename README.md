@@ -45,10 +45,10 @@ agent fixes, re-runs, and only then declares done. A retry circuit breaker
 escalates when the same findings keep coming back.
 
 All of it is written to an append-only ledger under `.aiwrangler/`, and the
-included dashboard turns that ledger into a live view with control:
-acknowledge human reviews against the exact diff, toggle gates, adjust
-thresholds, reset the breaker. Overrides expire on the next PASS, so strict
-is always the resting state.
+control surface is the same agent toolset: acknowledge human reviews
+against the exact diff (`wrangler_ack`), toggle gates or thresholds
+(`wrangler_override`), reset the breaker (`wrangler_loop_reset`). Overrides
+expire on the next PASS, so strict is always the resting state.
 
 ## Install
 
@@ -69,7 +69,7 @@ above covers it), then add two small files:
 `~/.config/opencode/tools/wrangler.ts`:
 
 ```ts
-export { wrangler_config, wrangler_plan, wrangler_check } from "aiwrangler/tools"
+export { wrangler_config, wrangler_plan, wrangler_check, wrangler_ack, wrangler_override, wrangler_loop_reset } from "aiwrangler/tools"
 ```
 
 `~/.config/opencode/plugins/wrangler-watch.ts`:
@@ -81,17 +81,60 @@ export { WranglerWatchPlugin } from "aiwrangler/plugin"
 Restart opencode. The tools appear in every session, and the plugin nudges
 the agent to run the gates at the right moments.
 
+### Any MCP client (Cursor, Claude Code, Windsurf, ...)
+
+`aiwrangler-mcp` is a stdio MCP server exposing the same gates as native
+tools (`wrangler_config`, `wrangler_plan`, `wrangler_check`,
+`wrangler_ack`, `wrangler_override`, `wrangler_loop_reset`). One server
+serves every workspace: each tool accepts an optional `dir` argument (the
+workspace root), falling back to the server's startup directory or
+`AIWRANGLER_DIR`.
+
+Cursor, global MCP config: (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "aiwrangler": { "command": "node", "args": ["/path/to/AiWrangler/dist/mcp.js"] }
+  }
+}
+```
+
+or: `cursor mcp add --global aiwrangler -- node /path/to/AiWrangler/dist/mcp.js`
+
+Claude Code:
+
+```
+claude mcp add aiwrangler -- node /path/to/AiWrangler/dist/mcp.js
+```
+
+Pair it with a rule in your agent's instructions (e.g.
+`~/.cursor/rules/aiwrangler.mdc`) that pins the lifecycle: call
+`wrangler_config` at session start, `wrangler_plan` before writing code,
+`wrangler_check` before declaring done, and stop on `HUMAN REVIEW`.
+
+**Human confirmations in the coding tool:** a fourth tool, `wrangler_ack`,
+closes the human-in-the-loop inside the agent conversation. Called with no
+arguments it lists the pending human-severity findings and their diff
+hash; called with rules (e.g. `["RULE-10"]` or `["*"]`) and a note, only
+after the user has explicitly approved in conversation, it records the
+owner acknowledgment so the next check passes those findings for that
+exact diff. Acks are audited in the ledger, void on any diff change, and
+block-severity findings are never ackable.
+
+**Runtime control:** `wrangler_override` (no args: report; `set`: change
+gates/policy/thresholds/egress after explicit user approval; `clear`:
+remove) and `wrangler_loop_reset` (reset the circuit breaker) replace the
+retired dashboard. Overrides auto-expire on the next PASS and every change
+is audited. Verify the wiring with `npm run verify:mcp`.
+
 ### Any other harness
 
-The gates are a plain TypeScript library and the dashboard is a standalone
-server, so any agent, editor, or CI can use them:
+The gates are a plain TypeScript library, so any agent, editor, or CI can
+use them:
 
 ```ts
 import { loadConfig, loadCorpus, runCheck } from "aiwrangler"
-```
-
-```
-aiwrangler-webui /path/to/your/repo --open
 ```
 
 ## Quick start
@@ -100,15 +143,9 @@ aiwrangler-webui /path/to/your/repo --open
    to `aiwrangler.config.json` in the repository you want guarded.
 2. Point its `corpus` block at your ground-truth documents. Missing files
    are skipped, so you can start with just a spec and grow from there.
-3. Start the dashboard from the guarded repo:
-
-```
-aiwrangler-webui --open
-```
-
-It prints a URL with a token (`http://127.0.0.1:4478/?token=...`), opens
-the dashboard, and live-follows every gate decision. The server and your
-agent share nothing but the `.aiwrangler/` files.
+3. Add the MCP server (or opencode tools) to your agent, and pin the
+   lifecycle in its instructions: `wrangler_config` at session start,
+   `wrangler_plan` before code, `wrangler_check` before done.
 
 ## Ground truth
 
@@ -133,8 +170,10 @@ working example and format reference.
 
 ## Security posture
 
-- The dashboard is localhost-only by default, bearer-token auth on every
-  route (timing-safe compare), no CDN or external assets, strict CSP.
+- The MCP server is local stdio only: no port, no token surface. Control
+  tools (`wrangler_ack`, `wrangler_override`, `wrangler_loop_reset`) are
+  documented to require explicit user approval, and every use is audited
+  in the ledger.
 - The semantic judge is pinned to a versioned model, so calibrated
   thresholds cannot silently move. Its one-time egress warning (task, diff,
   and spec text goes to `api.typesafe.ai`) surfaces before first use; set
@@ -147,11 +186,11 @@ working example and format reference.
 `aiwrangler.config.json` (JSONC, schema-validated) is discovered from the
 working directory upward, else `~/.config/aiwrangler/`. Every check is a
 gate flag, all default on. Key blocks: `model`, `policies` (thresholds),
-`egress`, `corpus`, `gates`, `webui`, `repos` (workspace layout for
+`egress`, `corpus`, `gates`, `repos` (workspace layout for
 multi-repo projects).
 
 Precedence for effective config: **env vars > runtime overrides
-(dashboard) > config file > defaults**.
+(`wrangler_override`) > config file > defaults**.
 
 ```
 AIWRANGLER_CONFIG=/path/to/config.json
@@ -170,16 +209,15 @@ AIWRANGLER_MODEL=jev-1.13.0
 | `loop-state.json` | circuit-breaker cycles |
 | `diffs/<hash>.txt` | capped snapshot of the exact diff each check judged |
 | `cache/` | content-addressed semantic answers (replay without re-billing) |
-| `runtime-overrides.json` | active dashboard overrides, if any (auto-expire on PASS) |
-| `webui-token` | dashboard auth token |
+| `runtime-overrides.json` | active runtime overrides, if any (auto-expire on PASS) |
 
 ## Development
 
 ```
-npm run build        # library + dashboard bundle
-npm run typecheck    # node + browser tsconfigs
+npm run build        # library + MCP server bundles
+npm run typecheck
 npm run verify:p0    # config, corpus parsing, hash stability
-npm run verify:webui # acks, override expiry, ledger fields
+npm run verify:mcp   # MCP handshake, ack flow, overrides, breaker (offline)
 ```
 
 `verify:p1` through `verify:p5` cover rule detection, the plan gate, the

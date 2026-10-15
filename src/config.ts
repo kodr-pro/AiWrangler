@@ -51,7 +51,6 @@ export const ConfigSchema = z.object({
   policies: z.record(z.string(), ThresholdsSchema).default({ strict: {}, permissive: { actionThreshold: 0.9, reviewThreshold: 0.35 } }),
   cache: z.object({ dir: z.string().default(".aiwrangler") }).default({}),
   ledger: z.object({ path: z.string().default(".aiwrangler/ledger.jsonl") }).default({}),
-  webui: z.object({ port: z.number().int().default(4478), bind: z.string().default("127.0.0.1") }).default({}),
   repos: z
     .object({
       super: z.string().default("."),
