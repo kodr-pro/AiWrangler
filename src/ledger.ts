@@ -26,8 +26,16 @@ export interface NoticeLedgerEntry {
   message: string
 }
 
-/** How a human confirmed an ack or override. `tty` is a terminal prompt; `yes-flag` is an explicit owner `--yes`. */
-export type HumanConfirmation = "tty" | "yes-flag"
+/**
+ * How a human confirmed an ack or override.
+ * `elicitation` is an MCP client UI prompt, `os-dialog` is a native desktop dialog,
+ * and `tty` is the owner typing yes at `aiwrangler` in a terminal.
+ * Tool arguments never count as confirmation.
+ */
+export type HumanConfirmation = "elicitation" | "os-dialog" | "tty"
+
+/** Which trusted entry point recorded the write. Not taken from tool arguments. */
+export type ApprovalHost = "cli" | "mcp" | "opencode"
 
 export interface OverrideLedgerEntry {
   ts: string
@@ -35,7 +43,7 @@ export interface OverrideLedgerEntry {
   source: string
   changes: Record<string, unknown>
   note?: string
-  /** Present on owner CLI writes. Absent on gate expiry and older entries. */
+  /** How the human confirmed. Absent on gate expiry and older entries. */
   confirmation?: HumanConfirmation
 }
 
@@ -45,9 +53,9 @@ export interface AckLedgerEntry {
   diffHash: string
   rules: string[]
   note?: string
-  /** Owner CLI writes `cli`. Older entries may say `mcp`, `opencode`, or `agent`. */
+  /** `cli`, `mcp`, or `opencode` for new writes. Older entries may say `agent`. */
   by?: string
-  /** Present on owner CLI writes. */
+  /** How the human confirmed. Absent on older entries. */
   confirmation?: HumanConfirmation
 }
 

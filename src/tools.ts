@@ -1,7 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
 import {
-  ACK_WRITE_REFUSAL,
-  OVERRIDE_WRITE_REFUSAL,
   configReport,
   planGate,
   checkGate,
@@ -9,8 +7,11 @@ import {
   isOverrideWriteAttempt,
   listPendingAck,
   reportOverrides,
+  requestHumanAck,
+  requestHumanOverride,
   loopResetGate,
 } from "./core.js"
+import type { RuntimeOverrides } from "./overrides.js"
 
 export const wrangler_config = tool({
   description:
@@ -68,22 +69,26 @@ export const wrangler_check = tool({
 
 export const wrangler_ack = tool({
   description:
-    "AiWrangler read-only HUMAN REVIEW list. Reports pending human-severity findings and the diff hash from the latest gate run. This tool cannot acknowledge findings. Approval is an out-of-band owner step: run `aiwrangler ack` in a terminal. Passing rules, note, or diffHash is rejected and records nothing.",
+    "AiWrangler HUMAN REVIEW. With no rules, note, or diffHash, lists pending human-severity findings and the diff hash. Passing rules requests an acknowledgment. Those arguments do not approve it: this native tool has no MCP elicitation channel, so it shows a desktop dialog. Nothing is recorded unless the owner approves. Prefer the MCP server inside opencode, which can elicit in the editor. Block-severity findings cannot be acked.",
   args: {
-    rules: tool.schema.array(tool.schema.string()).optional().describe("rejected; acknowledgments are not available to the agent"),
-    note: tool.schema.string().optional().describe("rejected; acknowledgments are not available to the agent"),
-    diffHash: tool.schema.string().optional().describe("rejected; acknowledgments are not available to the agent"),
+    rules: tool.schema.array(tool.schema.string()).optional().describe("rule IDs to ask the owner to acknowledge. Does not approve by itself."),
+    note: tool.schema.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
+    diffHash: tool.schema.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run"),
   },
   async execute(args, ctx) {
-    if (isAckWriteAttempt(args)) return ACK_WRITE_REFUSAL
     const dir = ctx.directory ?? process.cwd()
-    return listPendingAck(dir)
+    if (!isAckWriteAttempt(args)) return listPendingAck(dir)
+    return requestHumanAck(
+      dir,
+      { rules: args.rules ?? [], ...(args.note !== undefined ? { note: args.note } : {}), ...(args.diffHash !== undefined ? { diffHash: args.diffHash } : {}) },
+      { by: "opencode" },
+    )
   },
 })
 
 export const wrangler_override = tool({
   description:
-    "AiWrangler read-only override report. With no write arguments, reports active runtime overrides. This tool cannot set or clear overrides. The owner runs `aiwrangler override` in a terminal. Passing set, clear, or note is rejected and changes nothing. Overrides a human sets still expire on the next PASS.",
+    "AiWrangler runtime overrides. With no set, clear, or note, reports active overrides. Passing set or clear requests a change. Those arguments do not apply it: this native tool shows a desktop dialog because it has no MCP elicitation channel. Nothing changes unless the owner approves. Prefer the MCP server inside opencode. Overrides expire on the next PASS.",
   args: {
     set: tool.schema
       .object({
@@ -94,14 +99,22 @@ export const wrangler_override = tool({
         gates: tool.schema.record(tool.schema.string(), tool.schema.boolean()).optional(),
       })
       .optional()
-      .describe("rejected; override changes are not available to the agent"),
-    clear: tool.schema.boolean().optional().describe("rejected; override changes are not available to the agent"),
-    note: tool.schema.string().optional().describe("rejected; override changes are not available to the agent"),
+      .describe("overrides to ask the owner to apply. Does not apply them by itself."),
+    clear: tool.schema.boolean().optional().describe("ask the owner to remove active overrides. Does not clear them by itself."),
+    note: tool.schema.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
   },
   async execute(args, ctx) {
-    if (isOverrideWriteAttempt(args)) return OVERRIDE_WRITE_REFUSAL
     const dir = ctx.directory ?? process.cwd()
-    return reportOverrides(dir)
+    if (!isOverrideWriteAttempt(args)) return reportOverrides(dir)
+    return requestHumanOverride(
+      dir,
+      {
+        ...(args.set !== undefined ? { set: args.set as RuntimeOverrides } : {}),
+        ...(args.clear === true ? { clear: true } : {}),
+        ...(args.note !== undefined ? { note: args.note } : {}),
+      },
+      { by: "opencode" },
+    )
   },
 })
 

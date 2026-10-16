@@ -1,5 +1,4 @@
-// Owner confirmation for ack/override writes. The CLI is the only caller.
-// MCP and opencode tools never reach this: they cannot invent a confirmation.
+// TTY confirmation for the owner CLI. There is no flag that skips this.
 import { createInterface } from "node:readline/promises"
 import type { Readable, Writable } from "node:stream"
 import type { HumanConfirmation } from "./ledger.js"
@@ -15,15 +14,16 @@ export interface ConfirmRefusal {
 }
 
 export const NON_TTY_REFUSAL =
-  'aiwrangler: refusing to write without a human at the terminal. Re-run in a TTY and type yes, or pass --yes if you are the owner (recorded as confirmation "yes-flag"). Agents must not pass --yes.'
+  "aiwrangler: refusing to write without a human at the terminal. Re-run in a TTY and type yes. --yes does not authorize a write. Nothing was recorded."
+
+export const YES_FLAG_REFUSAL =
+  "aiwrangler: --yes does not authorize a write. Type yes at the TTY prompt, or approve the in-editor elicitation or desktop dialog. Nothing was recorded."
 
 export async function confirmHuman(opts: {
-  yes: boolean
   prompt: string
   input?: Readable & { isTTY?: boolean }
   output?: Writable
 }): Promise<ConfirmResult | ConfirmRefusal> {
-  if (opts.yes) return { ok: true, confirmation: "yes-flag" }
   const input = opts.input ?? process.stdin
   const output = opts.output ?? process.stdout
   if (input.isTTY !== true) return { ok: false, message: NON_TTY_REFUSAL }

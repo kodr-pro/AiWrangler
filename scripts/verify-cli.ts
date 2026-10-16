@@ -1,12 +1,13 @@
-// Owner CLI: ack and override writes, TTY / --yes provenance, diff-hash binding.
-// Also proves the built opencode tools refuse the same writes.
+// Owner CLI: TTY confirmation, --yes refusal, OS-dialog injection, diff-hash binding.
+// Opencode native tools have no MCP session, so with the dialog disabled they refuse.
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
 import { pathToFileURL } from "node:url"
-import { checkGate, configReport } from "../src/core.js"
+import { checkGate, configReport, requestHumanAck } from "../src/core.js"
 import { runCli } from "../src/cli.js"
+import { confirmOsDialog } from "../src/osdialog.js"
 import type { AckLedgerEntry, LedgerEntry, OverrideLedgerEntry } from "../src/ledger.js"
 
 let failures = 0
@@ -109,6 +110,10 @@ async function runInjected(args: string[], isTTY: boolean, answer?: string): Pro
 
 process.stdout.write("CLI verification: owner ack/override outside MCP\n")
 
+// Fail closed for in-process dialogs so this suite never opens zenity.
+process.env.AIWRANGLER_OS_DIALOG = "off"
+check("os dialog off is unavailable", (await confirmOsDialog("probe")) === "unavailable")
+
 writeFileSync(join(fixture, "keys.ts"), "export const rotationIntervalSeconds = 42\n")
 const first = await checkGate(fixture, { task: "cli verify" })
 check("dirty key file is not a pass", first.includes("RULE-10") && first.includes("human"), first.split("\n")[0])
@@ -117,17 +122,21 @@ const diffHash = recorded && "diffHash" in recorded ? recorded.diffHash : undefi
 check("ledger stored a diff hash", typeof diffHash === "string" && /^[0-9a-f]{16,}$/.test(diffHash))
 
 const refused = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--note", "agent pipe"])
-check("non-tty ack without --yes exits non-zero", refused.code !== 0, `code=${refused.code}`)
-check("non-tty ack without --yes is refused", refused.stderr.includes("refusing") && !refused.stdout.includes("acknowledged:"), refused.stderr)
+check("non-tty ack exits non-zero", refused.code !== 0, `code=${refused.code}`)
+check("non-tty ack is refused", refused.stderr.includes("refusing") && !refused.stdout.includes("acknowledged:"), refused.stderr)
 check("refused ack wrote nothing", acks().length === 0)
 
-const badHash = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--diff-hash", "not-a-hash", "--yes"])
-check("invalid diff hash rejected", badHash.code !== 0 && badHash.stderr.includes("invalid diffHash"), badHash.stderr)
+const badHash = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--diff-hash", "not-a-hash"])
+check("invalid diff hash rejected before the prompt", badHash.code !== 0 && badHash.stderr.includes("invalid diffHash"), badHash.stderr)
 check("invalid diff hash wrote nothing", acks().length === 0)
 
-const unknown = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--diff-hash", "ffffffffffffffff", "--yes"])
-check("unknown diff hash rejected", unknown.code !== 0 && unknown.stderr.includes("not found"), unknown.stderr)
+const unknown = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--diff-hash", "ffffffffffffffff"])
+check("unknown diff hash rejected before the prompt", unknown.code !== 0 && unknown.stderr.includes("not found"), unknown.stderr)
 check("unknown diff hash wrote nothing", acks().length === 0)
+
+const yesFlag = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--note", "flag is not a human", "--yes"])
+check("cli --yes does not authorize an ack", yesFlag.code !== 0 && yesFlag.stderr.includes("does not authorize") && !yesFlag.stdout.includes("acknowledged:"), yesFlag.stderr)
+check("--yes wrote nothing", acks().length === 0)
 
 const tools = (await import(pathToFileURL(toolsPath).href)) as {
   wrangler_ack: { execute: (args: { rules?: string[]; note?: string; diffHash?: string }, ctx: { directory: string }) => Promise<string> }
@@ -140,26 +149,44 @@ const tools = (await import(pathToFileURL(toolsPath).href)) as {
 }
 const ctx = { directory: fixture }
 const listed = await tools.wrangler_ack.execute({}, ctx)
-check("opencode ack tool lists pending findings", listed.includes("RULE-10") && listed.includes("cannot acknowledge"), listed.split("\n")[0])
+check("opencode ack tool lists pending findings", listed.includes("RULE-10") && listed.includes("cannot answer"), listed.split("\n")[0])
 const agentAck = await tools.wrangler_ack.execute(
   { rules: ["RULE-10"], note: "opencode self-ack", ...(typeof diffHash === "string" ? { diffHash } : {}) },
   ctx,
 )
-check("opencode ack tool refuses writes", agentAck.includes("refusing") && !agentAck.includes("acknowledged:"), agentAck)
+check(
+  "opencode ack tool cannot write without a dialog",
+  agentAck.includes("Nothing was recorded") && !agentAck.includes("acknowledged:"),
+  agentAck,
+)
 check("opencode ack tool wrote nothing", acks().length === 0)
 
-const approved = runBin(["ack", "--dir", fixture, "--rules", "RULE-10", "--note", "owner reviewed the rotation interval", "--yes"])
-check("cli --yes ack exits 0", approved.code === 0, approved.stderr)
-check("cli --yes ack reports the record", approved.stdout.startsWith("acknowledged:") && approved.stdout.includes("confirmation: yes-flag"), approved.stdout)
-const ack = acks().at(-1)
+const deniedDialog = await requestHumanAck(
+  fixture,
+  { rules: ["RULE-10"], note: "dialog deny" },
+  { by: "mcp", osDialog: async () => "deny" },
+)
+check("injected dialog deny writes nothing", deniedDialog.includes("declined") && acks().length === 0, deniedDialog)
+
+const dialogAck = await requestHumanAck(
+  fixture,
+  { rules: ["RULE-10"], note: "desktop approve" },
+  { by: "mcp", osDialog: async () => "approve" },
+)
 check(
-  "ledger ack is cli provenance bound to the recorded diff",
-  ack?.by === "cli" && ack.confirmation === "yes-flag" && ack.diffHash === diffHash && ack.rules.includes("RULE-10") && (ack.note ?? "").includes("rotation"),
-  JSON.stringify(ack),
+  "injected dialog approve records os-dialog",
+  dialogAck.startsWith("acknowledged:") && dialogAck.includes("confirmation: os-dialog"),
+  dialogAck,
+)
+const osAck = acks().at(-1)
+check(
+  "ledger ack is mcp provenance bound to the recorded diff",
+  osAck?.by === "mcp" && osAck.confirmation === "os-dialog" && osAck.diffHash === diffHash && osAck.rules.includes("RULE-10"),
+  JSON.stringify(osAck),
 )
 
-const after = await checkGate(fixture, { task: "cli verify" })
-check("post-ack check records owner acknowledgment", after.includes("owner-acknowledged"), after.split("\n").slice(0, 8).join(" | "))
+const afterDialog = await checkGate(fixture, { task: "cli verify" })
+check("post-ack check records owner acknowledgment", afterDialog.includes("owner-acknowledged"), afterDialog.split("\n").slice(0, 8).join(" | "))
 
 const declined = await runInjected(["ack", "--rules", "RULE-10", "--note", "nope"], true, "no")
 check("tty decline writes nothing", declined.code !== 0 && declined.stderr.includes("not confirmed") && acks().length === 1, declined.stderr)
@@ -175,22 +202,30 @@ const changed = await checkGate(fixture, { task: "cli verify" })
 check("diff change voids the ack", changed.includes("RULE-10") && !changed.includes("owner-acknowledged"), changed.split("\n").slice(0, 6).join(" | "))
 
 const setRefused = runBin(["override", "--dir", fixture, "--set", '{"gates":{"docDrift":false}}', "--note", "pipe"])
-check("non-tty override without --yes is refused", setRefused.code !== 0 && setRefused.stderr.includes("refusing"), setRefused.stderr)
+check("non-tty override is refused", setRefused.code !== 0 && setRefused.stderr.includes("refusing"), setRefused.stderr)
 check("refused override wrote no file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
 
+const yesOverride = runBin(["override", "--dir", fixture, "--set", '{"gates":{"docDrift":false}}', "--yes"])
+check("cli --yes does not authorize an override", yesOverride.code !== 0 && yesOverride.stderr.includes("does not authorize"), yesOverride.stderr)
+check("--yes override wrote no file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
+
 const agentOverride = await tools.wrangler_override.execute({ set: { gates: { docDrift: false } }, note: "opencode" }, ctx)
-check("opencode override tool refuses writes", agentOverride.includes("refusing") && !agentOverride.includes("ACTIVE"), agentOverride)
+check(
+  "opencode override tool cannot write without a dialog",
+  agentOverride.includes("Nothing was recorded") && !agentOverride.includes("ACTIVE"),
+  agentOverride,
+)
 const agentClear = await tools.wrangler_override.execute({ clear: true }, ctx)
-check("opencode override clear is refused", agentClear.includes("refusing"))
+check("opencode override clear with nothing active is a no-op", agentClear.includes("no runtime overrides were active"), agentClear)
 check("opencode override wrote no ledger entry", overrides().length === 0)
 
-const badPolicy = runBin(["override", "--dir", fixture, "--set", '{"activePolicy":"yolo"}', "--yes"])
-check("unknown policy rejected", badPolicy.code !== 0 && badPolicy.stderr.includes("invalid overrides"), badPolicy.stderr)
+const badPolicy = runBin(["override", "--dir", fixture, "--set", '{"activePolicy":"yolo"}'])
+check("unknown policy rejected before the prompt", badPolicy.code !== 0 && badPolicy.stderr.includes("invalid overrides"), badPolicy.stderr)
 check("rejected policy wrote no file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
 
-const setOk = runBin(["override", "--dir", fixture, "--set", '{"gates":{"docDrift":false}}', "--note", "owner disabled doc drift", "--yes"])
-check("cli --yes override exits 0", setOk.code === 0, setOk.stderr)
-check("cli --yes override reports PASS expiry and confirmation", setOk.stdout.includes("expire on next PASS") && setOk.stdout.includes("confirmation: yes-flag"), setOk.stdout)
+const setOk = await runInjected(["override", "--set", '{"gates":{"docDrift":false}}', "--note", "owner disabled doc drift"], true, "yes")
+check("tty override exits 0", setOk.code === 0, setOk.stderr + setOk.stdout)
+check("tty override reports PASS expiry and confirmation", setOk.stdout.includes("expire on next PASS") && setOk.stdout.includes("confirmation: tty"), setOk.stdout)
 const ovFile = JSON.parse(readFileSync(join(fixture, ".aiwrangler", "runtime-overrides.json"), "utf8")) as {
   expiresOn: string
   overrides: { gates?: Record<string, boolean> }
@@ -200,7 +235,7 @@ check("override file expires on pass", ovFile.expiresOn === "pass" && ovFile.ove
 const ovEntry = overrides().at(-1)
 check(
   "ledger override is cli provenance",
-  ovEntry?.source === "cli" && ovEntry.confirmation === "yes-flag" && (ovEntry.changes as { gates?: { docDrift?: boolean } }).gates?.docDrift === false,
+  ovEntry?.source === "cli" && ovEntry.confirmation === "tty" && (ovEntry.changes as { gates?: { docDrift?: boolean } }).gates?.docDrift === false,
   JSON.stringify(ovEntry),
 )
 
@@ -209,22 +244,22 @@ const report = runBin(["override", "--dir", fixture])
 check("override report is read-only and shows the gate", report.code === 0 && report.stdout.includes("docDrift") && report.stdout.includes("expiresOn: pass"), report.stdout)
 
 const clearRefused = runBin(["override", "--dir", fixture, "--clear"])
-check("non-tty clear without --yes is refused", clearRefused.code !== 0 && clearRefused.stderr.includes("refusing"), clearRefused.stderr)
+check("non-tty clear is refused", clearRefused.code !== 0 && clearRefused.stderr.includes("refusing"), clearRefused.stderr)
 check("refused clear leaves the file", existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
 
-const cleared = runBin(["override", "--dir", fixture, "--clear", "--note", "owner restored strict", "--yes"])
-check("cli --yes clear exits 0", cleared.code === 0 && cleared.stdout.includes("cleared by cli") && cleared.stdout.includes("confirmation: yes-flag"), cleared.stderr + cleared.stdout)
+const cleared = await runInjected(["override", "--clear", "--note", "owner restored strict"], true, "yes")
+check("tty clear exits 0", cleared.code === 0 && cleared.stdout.includes("cleared by cli") && cleared.stdout.includes("confirmation: tty"), cleared.stderr + cleared.stdout)
 check("clear removes the overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
 const clearEntry = overrides().at(-1)
 check(
-  "ledger records the manual clear with confirmation",
-  clearEntry?.source === "cli" && clearEntry.confirmation === "yes-flag" && (clearEntry.changes as { cleared?: string }).cleared === "manual",
+  "ledger records the manual clear with tty confirmation",
+  clearEntry?.source === "cli" && clearEntry.confirmation === "tty" && (clearEntry.changes as { cleared?: string }).cleared === "manual",
   JSON.stringify(clearEntry),
 )
 check("config restored after clear", configReport(fixture).includes("on   check.docDrift"))
 
 const help = runBin(["--help"])
-check("help exits 0 and names both commands", help.code === 0 && help.stdout.includes("aiwrangler ack") && help.stdout.includes("aiwrangler override"))
+check("help exits 0 and names both commands", help.code === 0 && help.stdout.includes("aiwrangler ack") && help.stdout.includes("aiwrangler override") && help.stdout.includes("does not authorize"))
 
 rmSync(fixture, { recursive: true, force: true })
 if (failures > 0) {

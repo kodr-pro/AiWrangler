@@ -1,7 +1,7 @@
-// AiWrangler MCP server: exposes the gates (config / plan / check / loop-reset)
-// plus read-only ack and override reports to any MCP client (Cursor, Claude
-// Code, Windsurf, ...). Acknowledging a HUMAN REVIEW or changing gates is
-// not possible here; the owner runs the `aiwrangler` CLI. stdio transport.
+// AiWrangler MCP server. Ack and override writes ask the human through MCP
+// elicitation (the client UI). If the client has no form elicitation, the
+// server falls back to a native desktop dialog. Tool arguments never authorize
+// a write by themselves. stdio transport.
 //
 //   node dist/mcp.js [rootDir]        # rootDir = default gate directory
 //   AIWRANGLER_DIR=/path node dist/mcp.js
@@ -11,9 +11,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
+import type { ElicitOutcome } from "./approve.js"
 import {
-  ACK_WRITE_REFUSAL,
-  OVERRIDE_WRITE_REFUSAL,
   configReport,
   planGate,
   checkGate,
@@ -21,9 +20,12 @@ import {
   isOverrideWriteAttempt,
   listPendingAck,
   reportOverrides,
+  requestHumanAck,
+  requestHumanOverride,
   loopResetGate,
   resolveGateDir,
 } from "./core.js"
+import type { RuntimeOverrides } from "./overrides.js"
 
 const rootArg = process.argv.slice(2).find((a) => !a.startsWith("-"))
 if (process.env.AIWRANGLER_DIR === undefined && rootArg !== undefined) {
@@ -109,24 +111,64 @@ function safe(fn: () => string): string {
   }
 }
 
+const decisionSchema = {
+  type: "object" as const,
+  properties: {
+    decision: {
+      type: "string" as const,
+      title: "Decision",
+      description: "Approve records this write. Deny leaves the gate unchanged.",
+      enum: ["approve", "deny"],
+      enumNames: ["Approve", "Deny"],
+    },
+  },
+  required: ["decision"],
+}
+
+/** Ask the MCP client UI. Unsupported clients fall through to the OS dialog. */
+async function elicitDecision(summary: string): Promise<ElicitOutcome> {
+  try {
+    const result = await server.server.elicitInput({
+      mode: "form",
+      message: summary,
+      requestedSchema: decisionSchema,
+    })
+    if (result.action === "accept" && result.content?.decision === "approve") return "approve"
+    return "deny"
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message.toLowerCase().includes("does not support") && message.toLowerCase().includes("elicit")) return "unsupported"
+    return { error: message }
+  }
+}
+
+function toolResult(text: string): { isError?: boolean; content: { type: "text"; text: string }[] } {
+  return { ...(text.startsWith("aiwrangler:") ? { isError: true } : {}), content: [{ type: "text", text }] }
+}
+
 server.registerTool(
   "wrangler_ack",
   {
     description:
-      "AiWrangler read-only HUMAN REVIEW list. Reports pending human-severity findings and the diff hash from the latest gate run. This tool cannot acknowledge findings. Approval is an out-of-band owner step: run `aiwrangler ack` in a terminal. Passing rules, note, or diffHash is rejected and records nothing.",
-    annotations: { readOnlyHint: true },
+      "AiWrangler HUMAN REVIEW. With no rules, note, or diffHash, lists pending human-severity findings and the diff hash. Passing rules requests an acknowledgment. Those arguments do not approve it: the server asks the human with an MCP elicitation prompt (findings, rules, diff hash, and note), or a desktop dialog if this client has no elicitation. Nothing is recorded unless the human approves. Block-severity findings cannot be acked. A diff change voids the ack.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
-      rules: z.array(z.string()).optional().describe("rejected; acknowledgments are not available over MCP"),
-      note: z.string().optional().describe("rejected; acknowledgments are not available over MCP"),
-      diffHash: z.string().optional().describe("rejected; acknowledgments are not available over MCP"),
+      rules: z.array(z.string()).optional().describe('rule IDs to ask the owner to acknowledge, e.g. ["RULE-10"] or ["*"]. Does not approve by itself.'),
+      note: z.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
+      diffHash: z.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run. Does not approve by itself."),
       dir: dirArg,
     },
   },
   async ({ rules, note, diffHash, dir }) => {
-    if (isAckWriteAttempt({ rules, note, diffHash })) {
-      return { isError: true, content: [{ type: "text" as const, text: ACK_WRITE_REFUSAL }] }
+    if (!isAckWriteAttempt({ rules, note, diffHash })) {
+      return { content: [{ type: "text" as const, text: safe(() => listPendingAck(resolveGateDir(dir))) }] }
     }
-    return { content: [{ type: "text" as const, text: safe(() => listPendingAck(resolveGateDir(dir))) }] }
+    const text = await requestHumanAck(
+      resolveGateDir(dir),
+      { rules: rules ?? [], ...(note !== undefined ? { note } : {}), ...(diffHash !== undefined ? { diffHash } : {}) },
+      { by: "mcp", elicit: elicitDecision },
+    )
+    return toolResult(text)
   },
 )
 
@@ -140,8 +182,8 @@ server.registerTool(
   "wrangler_override",
   {
     description:
-      "AiWrangler read-only override report. With no write arguments, reports active runtime overrides. This tool cannot set or clear overrides. The owner runs `aiwrangler override` in a terminal. Passing set, clear, or note is rejected and changes nothing. Overrides a human sets still expire on the next PASS.",
-    annotations: { readOnlyHint: true },
+      "AiWrangler runtime overrides. With no set, clear, or note, reports active overrides. Passing set or clear requests a change. Those arguments do not apply it: the server asks the human with an MCP elicitation prompt, or a desktop dialog if this client has no elicitation. Nothing changes unless the human approves. Overrides expire on the next PASS.",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       set: z
         .object({
@@ -152,17 +194,26 @@ server.registerTool(
           gates: z.record(z.string(), z.boolean()).optional(),
         })
         .optional()
-        .describe("rejected; override changes are not available over MCP"),
-      clear: z.boolean().optional().describe("rejected; override changes are not available over MCP"),
-      note: z.string().optional().describe("rejected; override changes are not available over MCP"),
+        .describe("overrides to ask the owner to apply. Does not apply them by itself."),
+      clear: z.boolean().optional().describe("ask the owner to remove active overrides. Does not clear them by itself."),
+      note: z.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
       dir: dirArg,
     },
   },
   async ({ set, clear, note, dir }) => {
-    if (isOverrideWriteAttempt({ set, clear, note })) {
-      return { isError: true, content: [{ type: "text" as const, text: OVERRIDE_WRITE_REFUSAL }] }
+    if (!isOverrideWriteAttempt({ set, clear, note })) {
+      return { content: [{ type: "text" as const, text: safe(() => reportOverrides(resolveGateDir(dir))) }] }
     }
-    return { content: [{ type: "text" as const, text: safe(() => reportOverrides(resolveGateDir(dir))) }] }
+    const text = await requestHumanOverride(
+      resolveGateDir(dir),
+      {
+        ...(set !== undefined ? { set: set as RuntimeOverrides } : {}),
+        ...(clear === true ? { clear: true } : {}),
+        ...(note !== undefined ? { note } : {}),
+      },
+      { by: "mcp", elicit: elicitDecision },
+    )
+    return toolResult(text)
   },
 )
 

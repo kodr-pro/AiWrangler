@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Owner CLI for HUMAN REVIEW acks and runtime overrides.
-// Agents reach the read-only MCP/opencode tools; they do not get this write path.
+// In Cursor and opencode the MCP server asks in the editor instead.
+// --yes is rejected: a flag is not a human.
 //
-//   aiwrangler ack [--dir DIR] [--rules RULE[,RULE...]] [--note TEXT] [--diff-hash HEX] [--yes]
-//   aiwrangler override [--dir DIR] [--set JSON] [--clear] [--note TEXT] [--yes]
+//   aiwrangler ack [--dir DIR] [--rules RULE[,RULE...]] [--note TEXT] [--diff-hash HEX]
+//   aiwrangler override [--dir DIR] [--set JSON] [--clear] [--note TEXT]
 import { realpathSync } from "node:fs"
 import { resolve } from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { pathToFileURL } from "node:url"
 import { parseArgs, type ParseArgsConfig } from "node:util"
-import { confirmHuman } from "./confirm.js"
-import { acknowledgeFindings, listPendingAck, reportOverrides, resolveGateDir, writeOverrides } from "./core.js"
+import { confirmHuman, YES_FLAG_REFUSAL } from "./confirm.js"
+import { acknowledgeFindings, listPendingAck, planAck, planOverride, reportOverrides, resolveGateDir, writeOverrides } from "./core.js"
 import { RuntimeOverridesSchema, type RuntimeOverrides } from "./overrides.js"
 
 export interface CliIO {
@@ -21,13 +22,13 @@ export interface CliIO {
 
 const HELP = `aiwrangler — owner commands for HUMAN REVIEW acks and runtime overrides.
 
-The coding agent cannot perform these writes through MCP or opencode tools.
-Run them yourself. On a TTY the command asks you to type yes. Without a TTY
-it refuses unless you pass --yes, which is recorded as confirmation "yes-flag".
+Inside Cursor or opencode, prefer the MCP tools: a write asks you in the
+editor (elicitation) or a desktop dialog. This CLI is the terminal path.
+It asks you to type yes on a TTY. --yes does not authorize a write.
 
 Usage:
-  aiwrangler ack [--dir DIR] [--rules RULE[,RULE...]] [--note TEXT] [--diff-hash HEX] [--yes]
-  aiwrangler override [--dir DIR] [--set JSON] [--clear] [--note TEXT] [--yes]
+  aiwrangler ack [--dir DIR] [--rules RULE[,RULE...]] [--note TEXT] [--diff-hash HEX]
+  aiwrangler override [--dir DIR] [--set JSON] [--clear] [--note TEXT]
 
 ack with no --rules lists pending human findings and the diff hash.
 override with no --set or --clear reports active overrides.
@@ -75,6 +76,10 @@ async function runAck(argv: string[], io: CliIO): Promise<number> {
     emit(io.output, HELP)
     return 0
   }
+  if (flags.values.yes === true) {
+    emit(io.error, YES_FLAG_REFUSAL)
+    return 1
+  }
   const dir = resolveGateDir(typeof flags.values.dir === "string" ? flags.values.dir : undefined)
   const ruleArgs = Array.isArray(flags.values.rules) ? flags.values.rules.filter((r): r is string => typeof r === "string") : undefined
   const rules = parseRules(ruleArgs)
@@ -93,15 +98,13 @@ async function runAck(argv: string[], io: CliIO): Promise<number> {
     emit(io.error, 'aiwrangler: --rules must name at least one rule id (or "*"); nothing was recorded')
     return 1
   }
+  const planned = planAck(dir, { rules, ...(note !== undefined ? { note } : {}), ...(diffHash !== undefined ? { diffHash } : {}) })
+  if (!planned.ok) {
+    emit(io.error, planned.message)
+    return 1
+  }
   const confirmed = await confirmHuman({
-    yes: flags.values.yes === true,
-    prompt: [
-      "About to record an owner acknowledgment.",
-      `  rules: ${rules.join(",")}`,
-      `  diffHash: ${diffHash ?? "(latest recorded gate run)"}`,
-      ...(note !== undefined ? [`  note: ${note}`] : []),
-      "Type yes to confirm: ",
-    ].join("\n"),
+    prompt: planned.summary + "\nType yes to confirm: ",
     input: io.input,
     output: io.output,
   })
@@ -110,10 +113,11 @@ async function runAck(argv: string[], io: CliIO): Promise<number> {
     return 1
   }
   const text = acknowledgeFindings(dir, {
-    rules,
+    rules: planned.rules,
+    diffHash: planned.diffHash,
     confirmation: confirmed.confirmation,
-    ...(note !== undefined ? { note } : {}),
-    ...(diffHash !== undefined ? { diffHash } : {}),
+    by: "cli",
+    ...(planned.note !== undefined ? { note: planned.note } : {}),
   })
   emit(isGateError(text) ? io.error : io.output, text)
   return isGateError(text) ? 1 : 0
@@ -138,6 +142,10 @@ async function runOverride(argv: string[], io: CliIO): Promise<number> {
   if (flags.values.help === true) {
     emit(io.output, HELP)
     return 0
+  }
+  if (flags.values.yes === true) {
+    emit(io.error, YES_FLAG_REFUSAL)
+    return 1
   }
   const dir = resolveGateDir(typeof flags.values.dir === "string" ? flags.values.dir : undefined)
   const note = typeof flags.values.note === "string" ? flags.values.note : undefined
@@ -172,14 +180,21 @@ async function runOverride(argv: string[], io: CliIO): Promise<number> {
     }
     set = parsed.data
   }
+  const planned = planOverride(dir, {
+    ...(clear ? { clear: true } : {}),
+    ...(set !== undefined ? { set } : {}),
+    ...(note !== undefined ? { note } : {}),
+  })
+  if (!planned.ok) {
+    emit(io.error, planned.message)
+    return 1
+  }
+  if (planned.kind === "noop") {
+    emit(io.output, planned.message)
+    return 0
+  }
   const confirmed = await confirmHuman({
-    yes: flags.values.yes === true,
-    prompt: [
-      clear ? "About to clear runtime overrides and restore the strict resting state." : "About to apply runtime overrides (they expire on the next PASS):",
-      ...(set !== undefined ? [JSON.stringify(set)] : []),
-      ...(note !== undefined ? [`  note: ${note}`] : []),
-      "Type yes to confirm: ",
-    ].join("\n"),
+    prompt: planned.summary + "\nType yes to confirm: ",
     input: io.input,
     output: io.output,
   })
@@ -189,9 +204,9 @@ async function runOverride(argv: string[], io: CliIO): Promise<number> {
   }
   const text = writeOverrides(dir, {
     confirmation: confirmed.confirmation,
-    ...(clear ? { clear: true } : {}),
-    ...(set !== undefined ? { set } : {}),
-    ...(note !== undefined ? { note } : {}),
+    by: "cli",
+    ...(planned.kind === "clear" ? { clear: true } : { set: planned.set }),
+    ...(planned.note !== undefined ? { note: planned.note } : {}),
   })
   emit(isGateError(text) ? io.error : io.output, text)
   return isGateError(text) ? 1 : 0

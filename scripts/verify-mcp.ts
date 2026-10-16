@@ -3,6 +3,7 @@ import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 
 let failures = 0
 function check(name: string, cond: boolean, detail?: string): void {
@@ -42,14 +43,40 @@ process.stdout.write("MCP verification: stdio handshake + tools\n")
 // aiwrangler.config.json is gitignored on purpose, so a clean clone has nothing
 // for a dir-less call to discover there. evals/corpus ships a fixture config.
 const serverRoot = join(import.meta.dirname, "..", "evals", "corpus")
+function childEnv(extra: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  return { ...env, ...extra }
+}
+
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [join(import.meta.dirname, "..", "dist", "mcp.js"), serverRoot],
   // cwd with no config of its own: a dir-less call must use the startup root
   // above, not whatever directory the suite was launched from.
   cwd: import.meta.dirname,
+  // Fail closed if elicitation is not used, so this suite never opens a desktop dialog.
+  env: childEnv({ AIWRANGLER_OS_DIALOG: "off" }),
 })
-const client = new Client({ name: "verify-mcp", version: "0.0.0" })
+type ElicitMode = "decline" | "deny-form" | "approve"
+let elicitMode: ElicitMode = "decline"
+let elicitCount = 0
+let lastElicitMessage = ""
+const client = new Client({ name: "verify-mcp", version: "0.0.0" }, { capabilities: { elicitation: { form: {} } } })
+client.setRequestHandler(ElicitRequestSchema, async (request) => {
+  elicitCount++
+  const params = request.params as { message?: string; requestedSchema?: unknown }
+  lastElicitMessage = params.message ?? ""
+  const schema = JSON.stringify(params.requestedSchema ?? {})
+  if (!schema.includes("approve") || !schema.includes("deny")) {
+    return { action: "decline" as const }
+  }
+  if (elicitMode === "decline") return { action: "decline" as const }
+  if (elicitMode === "deny-form") return { action: "accept" as const, content: { decision: "deny" } }
+  return { action: "accept" as const, content: { decision: "approve" } }
+})
 await client.connect(transport)
 
 const listed = await client.listTools()
@@ -61,15 +88,15 @@ check(
 )
 const ackTool = listed.tools.find((t) => t.name === "wrangler_ack")
 const overrideTool = listed.tools.find((t) => t.name === "wrangler_override")
-check("ack tool is advertised read-only", ackTool?.annotations?.readOnlyHint === true)
-check("override tool is advertised read-only", overrideTool?.annotations?.readOnlyHint === true)
+check("ack tool is not advertised as silent", ackTool?.annotations?.readOnlyHint !== true)
+check("override tool is not advertised as silent", overrideTool?.annotations?.readOnlyHint !== true)
 check(
-  "ack description does not offer a write",
-  (ackTool?.description ?? "").includes("cannot acknowledge") && !(ackTool?.description ?? "").includes("records an owner acknowledgment"),
+  "ack description says arguments do not approve",
+  (ackTool?.description ?? "").includes("do not approve") && (ackTool?.description ?? "").includes("elicitation"),
 )
 check(
-  "override description does not offer a write",
-  (overrideTool?.description ?? "").includes("cannot set or clear") && !(overrideTool?.description ?? "").includes("ONLY after explicit user approval"),
+  "override description says arguments do not apply",
+  (overrideTool?.description ?? "").includes("do not apply") && (overrideTool?.description ?? "").includes("elicitation"),
 )
 
 const cfg = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
@@ -102,7 +129,7 @@ const plan = await client.callTool({ name: "wrangler_plan", arguments: { dir: fi
 const planText = (plan.content as { text: string }[])[0]!.text
 check("plan returns an action", /AIWRANGLER PLAN: (PASS|CLARIFY|HUMAN|DEGRADED)/.test(planText), planText.split("\n")[0])
 
-// --- agent cannot ack or override. List/report still work. Writes are the CLI. ---
+// --- human approval is elicitation, not the tool arguments ---
 writeFileSync(join(fixture, "keys.ts"), "export const rotationIntervalSeconds = 42\n")
 
 const human = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
@@ -111,31 +138,50 @@ check("key-material diff flags RULE-10 human finding", humanText.includes("RULE-
 const diffHash = humanText.match(/diff: ([0-9a-f]{16})/)?.[1]
 check("report carries a diff hash", diffHash !== undefined)
 
-function ledgerKinds(): string[] {
+function ledgerEntries(): { kind: string; confirmation?: string; by?: string; source?: string; diffHash?: string; rules?: string[] }[] {
   return readFileSync(join(fixture, ".aiwrangler", "ledger.jsonl"), "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((line) => (JSON.parse(line) as { kind: string }).kind)
+    .map((line) => JSON.parse(line) as { kind: string; confirmation?: string; by?: string; source?: string; diffHash?: string; rules?: string[] })
+}
+function ledgerKinds(): string[] {
+  return ledgerEntries().map((entry) => entry.kind)
 }
 
+const beforeList = elicitCount
 const pending = await client.callTool({ name: "wrangler_ack", arguments: { dir: fixture } })
 const pendingText = (pending.content as { text: string }[])[0]!.text
 check("ack list mode shows pending findings", pending.isError !== true && pendingText.includes("RULE-10") && pendingText.includes("human"), pendingText.split("\n")[0])
-check("ack list tells the owner to use the CLI", pendingText.includes("aiwrangler ack") && pendingText.includes("cannot acknowledge"))
+check("ack list tells the owner how to approve", pendingText.includes("aiwrangler ack") && pendingText.includes("cannot answer"))
+check("ack list does not elicit", elicitCount === beforeList)
 
-const ackAttempt = await client.callTool({
+const beforeBad = elicitCount
+const ackBad = await client.callTool({
   name: "wrangler_ack",
   arguments: { dir: fixture, rules: ["RULE-10"], note: "agent self-ack", diffHash: "ffffffffffffffff" },
 })
-const ackAttemptText = (ackAttempt.content as { text: string }[])[0]!.text
-check("mcp ack write is a tool error", ackAttempt.isError === true)
-check(
-  "mcp ack write is refused and does not enter the ack path",
-  ackAttemptText.includes("refusing") && !ackAttemptText.includes("acknowledged:") && !ackAttemptText.includes("not found"),
-  ackAttemptText,
-)
-check("mcp ack write appended no ledger ack", !ledgerKinds().includes("ack"), ledgerKinds().join(","))
+const ackBadText = (ackBad.content as { text: string }[])[0]!.text
+check("unknown diff hash is rejected before elicitation", ackBad.isError === true && ackBadText.includes("not found") && elicitCount === beforeBad, ackBadText)
+check("rejected hash appended no ledger ack", !ledgerKinds().includes("ack"))
+
+elicitMode = "decline"
+const declined = await client.callTool({
+  name: "wrangler_ack",
+  arguments: { dir: fixture, rules: ["RULE-10"], note: "please review the rotation interval" },
+})
+const declinedText = (declined.content as { text: string }[])[0]!.text
+check("elicitation decline is a tool error", declined.isError === true && declinedText.includes("declined") && !declinedText.includes("acknowledged:"), declinedText)
+check("decline prompt showed findings, rules, diff hash, and note", lastElicitMessage.includes("RULE-10") && lastElicitMessage.includes(diffHash ?? "missing") && lastElicitMessage.includes("rotation interval"), lastElicitMessage)
+check("declined ack appended nothing", !ledgerKinds().includes("ack"))
+
+elicitMode = "deny-form"
+const formDeny = await client.callTool({
+  name: "wrangler_ack",
+  arguments: { dir: fixture, rules: ["RULE-10"], note: "form deny" },
+})
+const formDenyText = (formDeny.content as { text: string }[])[0]!.text
+check("accepting the form with Deny does not ack", formDeny.isError === true && formDenyText.includes("declined") && !ledgerKinds().includes("ack"), formDenyText)
 
 const afterRefuse = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
 const afterRefuseText = (afterRefuse.content as { text: string }[])[0]!.text
@@ -144,27 +190,27 @@ check("refused ack leaves the human finding unacknowledged", afterRefuseText.inc
 const readOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture } })
 const readOvText = (readOv.content as { text: string }[])[0]!.text
 check("override read mode reports none active", readOv.isError !== true && readOvText.includes("none active"), readOvText.split("\n")[0])
+const beforeRead = elicitCount
+check("override read does not elicit", elicitCount === beforeRead)
 
+elicitMode = "decline"
 const setOv = await client.callTool({
   name: "wrangler_override",
   arguments: { dir: fixture, set: { gates: { docDrift: false } }, note: "agent self-override" },
 })
 const setOvText = (setOv.content as { text: string }[])[0]!.text
-check("mcp override set is a tool error", setOv.isError === true)
-check("mcp override set is refused", setOvText.includes("refusing") && !setOvText.includes("ACTIVE") && !setOvText.includes("invalid overrides"), setOvText)
+check("elicitation decline does not apply an override", setOv.isError === true && setOvText.includes("declined") && !setOvText.includes("ACTIVE"), setOvText)
+check("override prompt shows the requested gate and note", lastElicitMessage.includes("docDrift") && lastElicitMessage.includes("agent self-override"))
 
+const beforeBadPolicy = elicitCount
 const badOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, set: { activePolicy: "yolo" } } })
 const badOvText = (badOv.content as { text: string }[])[0]!.text
-check("mcp unknown policy is refused rather than validated as a write", badOv.isError === true && badOvText.includes("refusing") && !badOvText.includes("invalid overrides"))
+check("unknown policy is rejected before elicitation", badOv.isError === true && badOvText.includes("invalid overrides") && elicitCount === beforeBadPolicy, badOvText)
 
-const clrOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, clear: true, note: "agent clear" } })
-const clrOvText = (clrOv.content as { text: string }[])[0]!.text
-check("mcp override clear is refused", clrOv.isError === true && clrOvText.includes("refusing") && !clrOvText.includes("cleared"))
-
-check("mcp override wrote no runtime-overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
-check("mcp override appended no ledger override", !ledgerKinds().includes("override"), ledgerKinds().join(","))
+check("declined override wrote no runtime-overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
+check("declined override appended no ledger override", !ledgerKinds().includes("override"))
 const cfgStill = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
-check("docDrift stays on after refused override", ((cfgStill.content as { text: string }[])[0]!.text).includes("on   check.docDrift"))
+check("docDrift stays on after declined override", ((cfgStill.content as { text: string }[])[0]!.text).includes("on   check.docDrift"))
 
 // --- circuit breaker: repeated identical findings escalate, loop reset clears ---
 let escalated = false
@@ -183,6 +229,134 @@ check("loop reset reported", ((reset.content as { text: string }[])[0]!.text).in
 const postReset = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify breaker" } })
 const postResetText = (postReset.content as { text: string }[])[0]!.text
 check("breaker closed after reset", postResetText.includes("RULE-10") && !postResetText.includes("CIRCUIT BREAKER OPEN"))
+
+// A client that never advertised form elicitation. The desktop dialog is off,
+// so the write must fail closed instead of treating tool arguments as approval.
+const bareTransport = new StdioClientTransport({
+  command: process.execPath,
+  args: [join(import.meta.dirname, "..", "dist", "mcp.js"), serverRoot],
+  cwd: import.meta.dirname,
+  env: childEnv({ AIWRANGLER_OS_DIALOG: "off" }),
+})
+const bare = new Client({ name: "verify-mcp-no-elicit", version: "0.0.0" })
+await bare.connect(bareTransport)
+const acksBeforeBare = ledgerEntries().filter((entry) => entry.kind === "ack").length
+const bareAck = await bare.callTool({
+  name: "wrangler_ack",
+  arguments: { dir: fixture, rules: ["RULE-10"], note: "no ui" },
+})
+const bareAckText = (bareAck.content as { text: string }[])[0]!.text
+check(
+  "client without elicitation cannot ack when the desktop dialog is off",
+  bareAck.isError === true && bareAckText.includes("no human approval channel") && !bareAckText.includes("acknowledged:"),
+  bareAckText,
+)
+check("that refusal appended no ack", ledgerEntries().filter((entry) => entry.kind === "ack").length === acksBeforeBare)
+const bareOverride = await bare.callTool({
+  name: "wrangler_override",
+  arguments: { dir: fixture, set: { gates: { docDrift: false } }, note: "no ui" },
+})
+const bareOverrideText = (bareOverride.content as { text: string }[])[0]!.text
+check(
+  "client without elicitation cannot override when the desktop dialog is off",
+  bareOverride.isError === true && bareOverrideText.includes("no human approval channel") && !bareOverrideText.includes("ACTIVE"),
+  bareOverrideText,
+)
+check("that refusal wrote no runtime-overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
+await bare.close()
+
+elicitMode = "approve"
+const approved = await client.callTool({
+  name: "wrangler_ack",
+  arguments: { dir: fixture, rules: ["RULE-10"], note: "owner reviewed the rotation interval" },
+})
+const approvedText = (approved.content as { text: string }[])[0]!.text
+check(
+  "accepted elicitation records the ack",
+  approved.isError !== true && approvedText.startsWith("acknowledged:") && approvedText.includes("confirmation: elicitation"),
+  approvedText,
+)
+check(
+  "accept prompt showed the rule, diff hash, and note",
+  lastElicitMessage.includes("RULE-10") && lastElicitMessage.includes(diffHash ?? "missing") && lastElicitMessage.includes("rotation interval"),
+  lastElicitMessage,
+)
+const ack = ledgerEntries().filter((entry) => entry.kind === "ack").at(-1)
+check(
+  "ledger ack is mcp provenance with elicitation confirmation",
+  ack?.by === "mcp" && ack.confirmation === "elicitation" && (ack.rules ?? []).includes("RULE-10") && (ack.diffHash ?? "").startsWith(diffHash ?? "missing"),
+  JSON.stringify(ack),
+)
+const afterAck = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
+const afterAckText = (afterAck.content as { text: string }[])[0]!.text
+check("accepted ack marks the finding owner-acknowledged", afterAckText.includes("owner-acknowledged"), afterAckText.split("\n").slice(0, 8).join(" | "))
+
+elicitMode = "approve"
+const setOk = await client.callTool({
+  name: "wrangler_override",
+  arguments: { dir: fixture, set: { gates: { docDrift: false } }, note: "owner disabled doc drift" },
+})
+const setOkText = (setOk.content as { text: string }[])[0]!.text
+check(
+  "accepted elicitation applies the override",
+  setOk.isError !== true && setOkText.includes("ACTIVE") && setOkText.includes("confirmation: elicitation"),
+  setOkText,
+)
+const ovFile = JSON.parse(readFileSync(join(fixture, ".aiwrangler", "runtime-overrides.json"), "utf8")) as {
+  expiresOn: string
+  overrides: { gates?: Record<string, boolean> }
+}
+check("override file expires on pass", ovFile.expiresOn === "pass" && ovFile.overrides.gates?.docDrift === false)
+const ovEntry = ledgerEntries().filter((entry) => entry.kind === "override").at(-1) as {
+  source?: string
+  confirmation?: string
+  changes?: { gates?: { docDrift?: boolean } }
+} | undefined
+check(
+  "ledger override is mcp provenance with elicitation confirmation",
+  ovEntry?.source === "mcp" && ovEntry.confirmation === "elicitation" && ovEntry.changes?.gates?.docDrift === false,
+  JSON.stringify(ovEntry),
+)
+const cfgOff = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
+check("docDrift is off after accepted override", ((cfgOff.content as { text: string }[])[0]!.text).includes("off  check.docDrift"))
+
+elicitMode = "decline"
+const clearDeclined = await client.callTool({
+  name: "wrangler_override",
+  arguments: { dir: fixture, clear: true, note: "not yet" },
+})
+const clearDeclinedText = (clearDeclined.content as { text: string }[])[0]!.text
+check(
+  "declined clear leaves the override in place",
+  clearDeclined.isError === true && clearDeclinedText.includes("declined") && existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")),
+  clearDeclinedText,
+)
+check("clear prompt asks to restore the strict state", lastElicitMessage.includes("clear runtime overrides"))
+
+elicitMode = "approve"
+const cleared = await client.callTool({
+  name: "wrangler_override",
+  arguments: { dir: fixture, clear: true, note: "owner restored strict" },
+})
+const clearedText = (cleared.content as { text: string }[])[0]!.text
+check(
+  "accepted elicitation clears the override",
+  cleared.isError !== true && clearedText.includes("cleared by mcp") && clearedText.includes("confirmation: elicitation"),
+  clearedText,
+)
+check("clear removes the overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
+const clearEntry = ledgerEntries().filter((entry) => entry.kind === "override").at(-1) as {
+  source?: string
+  confirmation?: string
+  changes?: { cleared?: string }
+} | undefined
+check(
+  "ledger records the manual clear with elicitation confirmation",
+  clearEntry?.source === "mcp" && clearEntry.confirmation === "elicitation" && clearEntry.changes?.cleared === "manual",
+  JSON.stringify(clearEntry),
+)
+const cfgOn = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
+check("docDrift is on after accepted clear", ((cfgOn.content as { text: string }[])[0]!.text).includes("on   check.docDrift"))
 
 await client.close()
 
