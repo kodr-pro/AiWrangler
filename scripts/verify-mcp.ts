@@ -38,10 +38,16 @@ execSync("git init -q && git add -A && git -c user.email=v@mcp -c user.name=mcp 
 
 process.stdout.write("MCP verification: stdio handshake + tools\n")
 
+// Startup root is the committed corpus, not the repo root. The repo-root
+// aiwrangler.config.json is gitignored on purpose, so a clean clone has nothing
+// for a dir-less call to discover there. evals/corpus ships a fixture config.
+const serverRoot = join(import.meta.dirname, "..", "evals", "corpus")
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [join(import.meta.dirname, "..", "dist", "mcp.js"), fixture],
-  cwd: fixture,
+  args: [join(import.meta.dirname, "..", "dist", "mcp.js"), serverRoot],
+  // cwd with no config of its own: a dir-less call must use the startup root
+  // above, not whatever directory the suite was launched from.
+  cwd: import.meta.dirname,
 })
 const client = new Client({ name: "verify-mcp", version: "0.0.0" })
 await client.connect(transport)
@@ -72,9 +78,14 @@ check("config discovers fixture", cfgText.includes("[discovered]"), cfgText.spli
 check("corpus summary counts sections", cfgText.includes("spec=") && /\brule=\d+/.test(cfgText) && !cfgText.includes("spec=0"))
 check("egress off reported", cfgText.includes("semantic=OFF"))
 
-// dir-less call falls back to the server's startup root (the fixture passed on the command line)
+// dir-less call falls back to the server's startup root (evals/corpus)
 const none = await client.callTool({ name: "wrangler_config", arguments: {} })
-check("dir-less call falls back to server startup root", (none.content as { text: string }[])[0]!.text.includes("[discovered]") && (none.content as { text: string }[])[0]!.text.includes("spec="))
+const noneText = (none.content as { text: string }[])[0]!.text
+check(
+  "dir-less call falls back to server root",
+  noneText.includes("[discovered]") && noneText.includes(join("evals", "corpus", "aiwrangler.config.json")),
+  noneText.split("\n")[0],
+)
 
 // check gate on the clean fixture: no dirty files -> deterministic pass, no Jev spend
 const chk = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify" } })

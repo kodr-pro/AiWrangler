@@ -1,5 +1,7 @@
 # AiWrangler
 
+[![CI](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml/badge.svg)](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml)
+
 **Ground-truth guardrails for coding agents.**
 
 AiWrangler sits beside your coding agent and judges its plans and diffs
@@ -242,14 +244,18 @@ AIWRANGLER_MODEL=jev-1.13.0
 ```
 npm run build        # library, owner CLI, and MCP server bundles
 npm run typecheck
+npm test             # verify:p0–p4, verify:mcp, and verify:cli (what CI gates on)
 npm run verify:p0    # config, corpus parsing, hash stability
 npm run verify:mcp   # MCP handshake; ack and override writes are refused
 npm run verify:cli   # owner CLI ack/override, TTY and --yes provenance, diff-hash binding
 ```
 
-`verify:p1` through `verify:p5` cover rule detection, the plan gate, the
-semantic battery, the tool surface, and the seeded golden set; they run
-against the fixture corpus in `evals/corpus/` and need no private state.
+`verify:p1` through `verify:p4` cover rule detection, the plan gate, the
+semantic battery, and the tool surface. `verify:p5` is the seeded golden-set
+eval: it exits non-zero while recall is below 1, so CI runs it for the log
+and does not gate on it. All of them run against the fixture corpus in
+`evals/corpus/` and need no private state. `npm test` expects a prior
+`npm run build` (`verify:p4`, `verify:mcp`, and `verify:cli` execute the bundles in `dist/`).
 Live semantic checks activate automatically when `TYPESAFE_API_KEY` is set.
 
 ## Support
