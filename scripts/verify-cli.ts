@@ -70,6 +70,7 @@ function runBin(args: string[]): { code: number; stdout: string; stderr: string 
       encoding: "utf8",
       timeout: 5000,
       cwd: fixture,
+      stdio: ["ignore", "pipe", "pipe"],
     })
     return { code: 0, stdout, stderr: "" }
   } catch (err) {
