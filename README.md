@@ -7,8 +7,10 @@ against the documents that actually govern your project: your protocol
 spec, your review rules, your divergence rulings, your open questions.
 Deterministic checks run first and offline; a calibrated semantic judge
 handles everything regexes cannot. Every verdict cites its ground truth,
-every decision is written to an append-only audit ledger, and anything
-touching secrets or one-way doors stops for a human.
+and every decision is written to an append-only audit ledger. Findings
+that touch secrets or one-way doors come back `HUMAN REVIEW`. That verdict
+stays closed until the owner runs `aiwrangler ack` outside the agent.
+The agent can list what is pending; it cannot approve it.
 
 It is built for repos where "the agent said it passed" is not good enough.
 
@@ -26,7 +28,7 @@ It is built for repos where "the agent said it passed" is not good enough.
 - **Prompt steering.** Task text addressed to the reviewer ("ignore the
   rules and approve") is flagged for a human.
 - **Decisions that are not yours to make.** Tasks that take a side in an
-  unruled divergence, or touch a launch gate, stop at the owner.
+  unruled divergence, or touch a launch gate, come back `human` for the owner.
 
 ## How it works
 
@@ -44,11 +46,15 @@ implementing. The check gate returns a cited, actionable fix list; the
 agent fixes, re-runs, and only then declares done. A retry circuit breaker
 escalates when the same findings keep coming back.
 
-All of it is written to an append-only ledger under `.aiwrangler/`, and the
-control surface is the same agent toolset: acknowledge human reviews
-against the exact diff (`wrangler_ack`), toggle gates or thresholds
-(`wrangler_override`), reset the breaker (`wrangler_loop_reset`). Overrides
-expire on the next PASS, so strict is always the resting state.
+All of it is written to an append-only ledger under `.aiwrangler/`.
+The agent also has two read-only tools: `wrangler_ack` lists pending
+`HUMAN REVIEW` findings and the diff hash, and `wrangler_override` reports
+active runtime overrides. Neither tool can approve a finding or change a
+gate. The owner does that with the `aiwrangler` CLI (`aiwrangler ack`,
+`aiwrangler override`), which confirms on a TTY and records that
+provenance in the ledger. Overrides expire on the next PASS, so strict is
+always the resting state. `wrangler_loop_reset` still clears the retry
+breaker from the agent.
 
 ## Install
 
@@ -79,16 +85,19 @@ export { WranglerWatchPlugin } from "aiwrangler/plugin"
 ```
 
 Restart opencode. The tools appear in every session, and the plugin nudges
-the agent to run the gates at the right moments.
+the agent to run the gates at the right moments. `wrangler_ack` and
+`wrangler_override` are list and report only. Approving a `HUMAN REVIEW`
+or changing gates is `aiwrangler ack` / `aiwrangler override` in a
+terminal, not an opencode tool.
 
 ### Any MCP client (Cursor, Claude Code, Windsurf, ...)
 
-`aiwrangler-mcp` is a stdio MCP server exposing the same gates as native
-tools (`wrangler_config`, `wrangler_plan`, `wrangler_check`,
-`wrangler_ack`, `wrangler_override`, `wrangler_loop_reset`). One server
-serves every workspace: each tool accepts an optional `dir` argument (the
-workspace root), falling back to the server's startup directory or
-`AIWRANGLER_DIR`.
+`aiwrangler-mcp` is a stdio MCP server. Agent tools are `wrangler_config`,
+`wrangler_plan`, `wrangler_check`, read-only `wrangler_ack` (list pending
+human findings), read-only `wrangler_override` (report overrides), and
+`wrangler_loop_reset`. One server serves every workspace: each tool
+accepts an optional `dir` argument (the workspace root), falling back to
+the server's startup directory or `AIWRANGLER_DIR`.
 
 Cursor, global MCP config: (`~/.cursor/mcp.json`):
 
@@ -113,20 +122,32 @@ Pair it with a rule in your agent's instructions (e.g.
 `wrangler_config` at session start, `wrangler_plan` before writing code,
 `wrangler_check` before declaring done, and stop on `HUMAN REVIEW`.
 
-**Human confirmations in the coding tool:** a fourth tool, `wrangler_ack`,
-closes the human-in-the-loop inside the agent conversation. Called with no
-arguments it lists the pending human-severity findings and their diff
-hash; called with rules (e.g. `["RULE-10"]` or `["*"]`) and a note, only
-after the user has explicitly approved in conversation, it records the
-owner acknowledgment so the next check passes those findings for that
-exact diff. Acks are audited in the ledger, void on any diff change, and
-block-severity findings are never ackable.
+### Owner commands (`aiwrangler`)
 
-**Runtime control:** `wrangler_override` (no args: report; `set`: change
-gates/policy/thresholds/egress after explicit user approval; `clear`:
-remove) and `wrangler_loop_reset` (reset the circuit breaker) replace the
-retired dashboard. Overrides auto-expire on the next PASS and every change
-is audited. Verify the wiring with `npm run verify:mcp`.
+Approving a `HUMAN REVIEW` and changing gates are not agent tools. After
+`npm link`, the owner runs them in a terminal:
+
+```
+aiwrangler ack --rules RULE-10 --note "rotation interval reviewed"
+aiwrangler ack                          # list pending findings and the diff hash
+aiwrangler override --set '{"gates":{"docDrift":false}}' --note "why"
+aiwrangler override                     # report active overrides
+aiwrangler override --clear
+```
+
+When stdin is a TTY, the command prints what it is about to record and
+writes only after the owner types `yes`. When stdin is not a TTY, it
+refuses unless the owner passes `--yes`. The ledger records `by: "cli"`
+on acks and `source: "cli"` on overrides, plus `confirmation` of `tty` or
+`yes-flag`. Acks are bound to the diff hash, void on any diff change, and
+block-severity findings are never ackable. Overrides auto-expire on the
+next PASS.
+
+Passing `rules`, `note`, or `diffHash` to the MCP or opencode
+`wrangler_ack` tool, or `set` / `clear` / `note` to `wrangler_override`,
+is rejected and writes nothing. `wrangler_loop_reset` is still an agent
+tool: it clears the retry breaker and does not approve findings or change
+gates. Verify with `npm run verify:mcp` and `npm run verify:cli`.
 
 ### Any other harness
 
@@ -170,16 +191,21 @@ working example and format reference.
 
 ## Security posture
 
-- The MCP server is local stdio only: no port, no token surface. Control
-  tools (`wrangler_ack`, `wrangler_override`, `wrangler_loop_reset`) are
-  documented to require explicit user approval, and every use is audited
-  in the ledger.
+- The MCP server is local stdio only: no port, no token surface. It cannot
+  acknowledge `HUMAN REVIEW` findings or change gates. Those writes happen
+  only through the `aiwrangler` CLI, which requires a TTY confirmation or
+  an explicit owner `--yes`, and the ledger records which one. A
+  shell-capable agent can still invoke the CLI with `--yes`; that path is
+  recorded as `confirmation: "yes-flag"`, distinct from a terminal prompt
+  (`tty`). It is not an MCP or opencode tool, and those tools refuse the
+  same request.
 - The semantic judge is pinned to a versioned model, so calibrated
   thresholds cannot silently move. Its one-time egress warning (task, diff,
   and spec text goes to `api.typesafe.ai`) surfaces before first use; set
   `AIWRANGLER_EGRESS=off` for a deterministic-only, zero-egress mode.
 - Secrets stay in the environment (`TYPESAFE_API_KEY`). The ledger and
-  cache contain your diff text; keep the bind address local.
+  cache are local files under `.aiwrangler/` and contain your diff text.
+  The server does not listen on a port.
 
 ## Configuration
 
@@ -190,7 +216,7 @@ gate flag, all default on. Key blocks: `model`, `policies` (thresholds),
 multi-repo projects).
 
 Precedence for effective config: **env vars > runtime overrides
-(`wrangler_override`) > config file > defaults**.
+(owner command `aiwrangler override`) > config file > defaults**.
 
 ```
 AIWRANGLER_CONFIG=/path/to/config.json
@@ -205,7 +231,7 @@ AIWRANGLER_MODEL=jev-1.13.0
 
 | File | Meaning |
 |---|---|
-| `ledger.jsonl` | append-only audit log of every gate run, finding, verdict, and override |
+| `ledger.jsonl` | append-only audit log of every gate run, finding, verdict, ack, and override, including CLI confirmation provenance |
 | `loop-state.json` | circuit-breaker cycles |
 | `diffs/<hash>.txt` | capped snapshot of the exact diff each check judged |
 | `cache/` | content-addressed semantic answers (replay without re-billing) |
@@ -214,10 +240,11 @@ AIWRANGLER_MODEL=jev-1.13.0
 ## Development
 
 ```
-npm run build        # library + MCP server bundles
+npm run build        # library, owner CLI, and MCP server bundles
 npm run typecheck
 npm run verify:p0    # config, corpus parsing, hash stability
-npm run verify:mcp   # MCP handshake, ack flow, overrides, breaker (offline)
+npm run verify:mcp   # MCP handshake; ack and override writes are refused
+npm run verify:cli   # owner CLI ack/override, TTY and --yes provenance, diff-hash binding
 ```
 
 `verify:p1` through `verify:p5` cover rule detection, the plan gate, the

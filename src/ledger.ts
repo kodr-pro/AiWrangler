@@ -26,12 +26,17 @@ export interface NoticeLedgerEntry {
   message: string
 }
 
+/** How a human confirmed an ack or override. `tty` is a terminal prompt; `yes-flag` is an explicit owner `--yes`. */
+export type HumanConfirmation = "tty" | "yes-flag"
+
 export interface OverrideLedgerEntry {
   ts: string
   kind: "override"
   source: string
   changes: Record<string, unknown>
   note?: string
+  /** Present on owner CLI writes. Absent on gate expiry and older entries. */
+  confirmation?: HumanConfirmation
 }
 
 export interface AckLedgerEntry {
@@ -40,7 +45,10 @@ export interface AckLedgerEntry {
   diffHash: string
   rules: string[]
   note?: string
+  /** Owner CLI writes `cli`. Older entries may say `mcp`, `opencode`, or `agent`. */
   by?: string
+  /** Present on owner CLI writes. */
+  confirmation?: HumanConfirmation
 }
 
 export type LedgerEntry = GateLedgerEntry | NoticeLedgerEntry | OverrideLedgerEntry | AckLedgerEntry

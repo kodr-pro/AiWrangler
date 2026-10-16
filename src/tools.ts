@@ -1,5 +1,16 @@
 import { tool } from "@opencode-ai/plugin"
-import { configReport, planGate, checkGate, ackGate, overrideGate, loopResetGate } from "./core.js"
+import {
+  ACK_WRITE_REFUSAL,
+  OVERRIDE_WRITE_REFUSAL,
+  configReport,
+  planGate,
+  checkGate,
+  isAckWriteAttempt,
+  isOverrideWriteAttempt,
+  listPendingAck,
+  reportOverrides,
+  loopResetGate,
+} from "./core.js"
 
 export const wrangler_config = tool({
   description:
@@ -57,26 +68,22 @@ export const wrangler_check = tool({
 
 export const wrangler_ack = tool({
   description:
-    'AiWrangler human-confirmation flow. Call with NO arguments to list pending human-severity findings (and their diffHash) from the latest gate run. Call with rules (e.g. ["RULE-10"] or ["*"]) ONLY after the user has explicitly reviewed and approved those findings: it records an owner acknowledgment so the next wrangler_check passes the human-severity findings for that exact diff. Never ack without explicit user approval; block-severity findings cannot be acked.',
+    "AiWrangler read-only HUMAN REVIEW list. Reports pending human-severity findings and the diff hash from the latest gate run. This tool cannot acknowledge findings. Approval is an out-of-band owner step: run `aiwrangler ack` in a terminal. Passing rules, note, or diffHash is rejected and records nothing.",
   args: {
-    rules: tool.schema.array(tool.schema.string()).optional().describe('rule IDs to acknowledge, e.g. ["RULE-10"] or ["*"]'),
-    note: tool.schema.string().optional().describe("what the user approved and why (recorded in the audit ledger)"),
-    diffHash: tool.schema.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run"),
+    rules: tool.schema.array(tool.schema.string()).optional().describe("rejected; acknowledgments are not available to the agent"),
+    note: tool.schema.string().optional().describe("rejected; acknowledgments are not available to the agent"),
+    diffHash: tool.schema.string().optional().describe("rejected; acknowledgments are not available to the agent"),
   },
   async execute(args, ctx) {
+    if (isAckWriteAttempt(args)) return ACK_WRITE_REFUSAL
     const dir = ctx.directory ?? process.cwd()
-    return ackGate(dir, {
-      ...(args.rules ? { rules: args.rules } : {}),
-      ...(args.note ? { note: args.note } : {}),
-      ...(args.diffHash ? { diffHash: args.diffHash } : {}),
-      by: "opencode",
-    })
+    return listPendingAck(dir)
   },
 })
 
 export const wrangler_override = tool({
   description:
-    "AiWrangler runtime override control. Call with NO arguments to report active overrides. Call with set {activePolicy?, egressSemantic?, actionThreshold?, reviewThreshold?, gates: {name: bool}} ONLY after explicit user approval; overrides auto-expire on the next PASS verdict and every change is audited. Call with clear:true to remove them. Strict is always the resting state.",
+    "AiWrangler read-only override report. With no write arguments, reports active runtime overrides. This tool cannot set or clear overrides. The owner runs `aiwrangler override` in a terminal. Passing set, clear, or note is rejected and changes nothing. Overrides a human sets still expire on the next PASS.",
   args: {
     set: tool.schema
       .object({
@@ -86,18 +93,15 @@ export const wrangler_override = tool({
         reviewThreshold: tool.schema.number().min(0).max(1).optional(),
         gates: tool.schema.record(tool.schema.string(), tool.schema.boolean()).optional(),
       })
-      .optional(),
-    clear: tool.schema.boolean().optional(),
-    note: tool.schema.string().optional(),
+      .optional()
+      .describe("rejected; override changes are not available to the agent"),
+    clear: tool.schema.boolean().optional().describe("rejected; override changes are not available to the agent"),
+    note: tool.schema.string().optional().describe("rejected; override changes are not available to the agent"),
   },
   async execute(args, ctx) {
+    if (isOverrideWriteAttempt(args)) return OVERRIDE_WRITE_REFUSAL
     const dir = ctx.directory ?? process.cwd()
-    return overrideGate(dir, {
-      ...(args.set ? { set: args.set as import("./overrides.js").RuntimeOverrides } : {}),
-      ...(args.clear ? { clear: args.clear } : {}),
-      ...(args.note ? { note: args.note } : {}),
-      by: "opencode",
-    })
+    return reportOverrides(dir)
   },
 })
 

@@ -2,6 +2,8 @@ node_modules/
 dist/
 .aiwrangler/
 .verify-fixture/
+.verify-mcp-fixture/
+.verify-cli-fixture/
 evals/corpus/.aiwrangler/
 *.tsbuildinfo
 aiwrangler.config.json

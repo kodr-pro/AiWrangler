@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs"
 import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -40,7 +40,8 @@ process.stdout.write("MCP verification: stdio handshake + tools\n")
 
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [join(import.meta.dirname, "..", "dist", "mcp.js")],
+  args: [join(import.meta.dirname, "..", "dist", "mcp.js"), fixture],
+  cwd: fixture,
 })
 const client = new Client({ name: "verify-mcp", version: "0.0.0" })
 await client.connect(transport)
@@ -52,6 +53,18 @@ check(
   "descriptions survive the wire",
   listed.tools.every((t) => (t.description ?? "").length > 80),
 )
+const ackTool = listed.tools.find((t) => t.name === "wrangler_ack")
+const overrideTool = listed.tools.find((t) => t.name === "wrangler_override")
+check("ack tool is advertised read-only", ackTool?.annotations?.readOnlyHint === true)
+check("override tool is advertised read-only", overrideTool?.annotations?.readOnlyHint === true)
+check(
+  "ack description does not offer a write",
+  (ackTool?.description ?? "").includes("cannot acknowledge") && !(ackTool?.description ?? "").includes("records an owner acknowledgment"),
+)
+check(
+  "override description does not offer a write",
+  (overrideTool?.description ?? "").includes("cannot set or clear") && !(overrideTool?.description ?? "").includes("ONLY after explicit user approval"),
+)
 
 const cfg = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
 const cfgText = (cfg.content as { type: string; text: string }[])[0]!.text
@@ -59,9 +72,9 @@ check("config discovers fixture", cfgText.includes("[discovered]"), cfgText.spli
 check("corpus summary counts sections", cfgText.includes("spec=") && /\brule=\d+/.test(cfgText) && !cfgText.includes("spec=0"))
 check("egress off reported", cfgText.includes("semantic=OFF"))
 
-// dir-less call falls back to the server's startup root (this repo, which has a config)
+// dir-less call falls back to the server's startup root (the fixture passed on the command line)
 const none = await client.callTool({ name: "wrangler_config", arguments: {} })
-check("dir-less call falls back to server root", (none.content as { text: string }[])[0]!.text.includes("[discovered]"))
+check("dir-less call falls back to server startup root", (none.content as { text: string }[])[0]!.text.includes("[discovered]") && (none.content as { text: string }[])[0]!.text.includes("spec="))
 
 // check gate on the clean fixture: no dirty files -> deterministic pass, no Jev spend
 const chk = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify" } })
@@ -78,9 +91,7 @@ const plan = await client.callTool({ name: "wrangler_plan", arguments: { dir: fi
 const planText = (plan.content as { text: string }[])[0]!.text
 check("plan returns an action", /AIWRANGLER PLAN: (PASS|CLARIFY|HUMAN|DEGRADED)/.test(planText), planText.split("\n")[0])
 
-// --- human confirmation flow: dirty key-material file -> human finding -> ack -> acknowledged ---
-// (egress-off routing sends human findings to DEGRADED by design; the ack
-// wiring and semantics are what we assert here over the wire)
+// --- agent cannot ack or override. List/report still work. Writes are the CLI. ---
 writeFileSync(join(fixture, "keys.ts"), "export const rotationIntervalSeconds = 42\n")
 
 const human = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
@@ -89,45 +100,60 @@ check("key-material diff flags RULE-10 human finding", humanText.includes("RULE-
 const diffHash = humanText.match(/diff: ([0-9a-f]{16})/)?.[1]
 check("report carries a diff hash", diffHash !== undefined)
 
+function ledgerKinds(): string[] {
+  return readFileSync(join(fixture, ".aiwrangler", "ledger.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { kind: string }).kind)
+}
+
 const pending = await client.callTool({ name: "wrangler_ack", arguments: { dir: fixture } })
 const pendingText = (pending.content as { text: string }[])[0]!.text
-check("ack list mode shows pending findings", pendingText.includes("RULE-10") && pendingText.includes("human"), pendingText.split("\n")[0])
+check("ack list mode shows pending findings", pending.isError !== true && pendingText.includes("RULE-10") && pendingText.includes("human"), pendingText.split("\n")[0])
+check("ack list tells the owner to use the CLI", pendingText.includes("aiwrangler ack") && pendingText.includes("cannot acknowledge"))
 
-const ackBad = await client.callTool({ name: "wrangler_ack", arguments: { dir: fixture, rules: ["RULE-10"], diffHash: "ffffffffffffffff" } })
-check("unknown diffHash rejected", ((ackBad.content as { text: string }[])[0]!.text).includes("not found"))
+const ackAttempt = await client.callTool({
+  name: "wrangler_ack",
+  arguments: { dir: fixture, rules: ["RULE-10"], note: "agent self-ack", diffHash: "ffffffffffffffff" },
+})
+const ackAttemptText = (ackAttempt.content as { text: string }[])[0]!.text
+check("mcp ack write is a tool error", ackAttempt.isError === true)
+check(
+  "mcp ack write is refused and does not enter the ack path",
+  ackAttemptText.includes("refusing") && !ackAttemptText.includes("acknowledged:") && !ackAttemptText.includes("not found"),
+  ackAttemptText,
+)
+check("mcp ack write appended no ledger ack", !ledgerKinds().includes("ack"), ledgerKinds().join(","))
 
-const ack = await client.callTool({ name: "wrangler_ack", arguments: { dir: fixture, rules: ["RULE-10"], note: "fixture key reviewed by test" } })
-const ackText = (ack.content as { text: string }[])[0]!.text
-check("ack records owner approval", ackText.startsWith("acknowledged:"), ackText.split("\n")[0])
-
-const after = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
-const afterText = (after.content as { text: string }[])[0]!.text
-check("post-ack check records acknowledgment", afterText.includes("acknowledged"), afterText.split("\n")[0])
-
-// any diff change voids the ack
-writeFileSync(join(fixture, "keys.ts"), "export const rotationIntervalSeconds = 43\n")
-const changed = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
-const changedText = (changed.content as { text: string }[])[0]!.text
-check("diff change voids the ack", changedText.includes("RULE-10") && !changedText.includes("owner-acknowledged"))
-
-// --- override control: set -> reflected in config -> reported -> cleared ---
-const setOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, set: { gates: { docDrift: false } }, note: "test override" } })
-check("override set acknowledged", ((setOv.content as { text: string }[])[0]!.text).includes("ACTIVE"))
-
-const cfgOv = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
-const cfgOvText = (cfgOv.content as { text: string }[])[0]!.text
-check("override reflected in effective config", cfgOvText.includes("off  check.docDrift"))
+const afterRefuse = await client.callTool({ name: "wrangler_check", arguments: { dir: fixture, task: "mcp verify ack flow" } })
+const afterRefuseText = (afterRefuse.content as { text: string }[])[0]!.text
+check("refused ack leaves the human finding unacknowledged", afterRefuseText.includes("RULE-10") && !afterRefuseText.includes("owner-acknowledged"))
 
 const readOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture } })
-check("override read mode reports active", ((readOv.content as { text: string }[])[0]!.text).includes("docDrift"))
+const readOvText = (readOv.content as { text: string }[])[0]!.text
+check("override read mode reports none active", readOv.isError !== true && readOvText.includes("none active"), readOvText.split("\n")[0])
+
+const setOv = await client.callTool({
+  name: "wrangler_override",
+  arguments: { dir: fixture, set: { gates: { docDrift: false } }, note: "agent self-override" },
+})
+const setOvText = (setOv.content as { text: string }[])[0]!.text
+check("mcp override set is a tool error", setOv.isError === true)
+check("mcp override set is refused", setOvText.includes("refusing") && !setOvText.includes("ACTIVE") && !setOvText.includes("invalid overrides"), setOvText)
 
 const badOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, set: { activePolicy: "yolo" } } })
-check("unknown policy rejected", ((badOv.content as { text: string }[])[0]!.text).includes("invalid overrides"))
+const badOvText = (badOv.content as { text: string }[])[0]!.text
+check("mcp unknown policy is refused rather than validated as a write", badOv.isError === true && badOvText.includes("refusing") && !badOvText.includes("invalid overrides"))
 
-const clrOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, clear: true } })
-check("override cleared", ((clrOv.content as { text: string }[])[0]!.text).includes("cleared"))
-const cfgClr = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
-check("config restored after clear", ((cfgClr.content as { text: string }[])[0]!.text).includes("on   check.docDrift"))
+const clrOv = await client.callTool({ name: "wrangler_override", arguments: { dir: fixture, clear: true, note: "agent clear" } })
+const clrOvText = (clrOv.content as { text: string }[])[0]!.text
+check("mcp override clear is refused", clrOv.isError === true && clrOvText.includes("refusing") && !clrOvText.includes("cleared"))
+
+check("mcp override wrote no runtime-overrides file", !existsSync(join(fixture, ".aiwrangler", "runtime-overrides.json")))
+check("mcp override appended no ledger override", !ledgerKinds().includes("override"), ledgerKinds().join(","))
+const cfgStill = await client.callTool({ name: "wrangler_config", arguments: { dir: fixture } })
+check("docDrift stays on after refused override", ((cfgStill.content as { text: string }[])[0]!.text).includes("on   check.docDrift"))
 
 // --- circuit breaker: repeated identical findings escalate, loop reset clears ---
 let escalated = false

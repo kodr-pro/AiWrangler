@@ -1,6 +1,7 @@
-// AiWrangler MCP server: exposes the gates (config / plan / check / ack /
-// override / loop-reset) to any MCP client (Cursor, Claude Code, Windsurf,
-// ...). stdio transport.
+// AiWrangler MCP server: exposes the gates (config / plan / check / loop-reset)
+// plus read-only ack and override reports to any MCP client (Cursor, Claude
+// Code, Windsurf, ...). Acknowledging a HUMAN REVIEW or changing gates is
+// not possible here; the owner runs the `aiwrangler` CLI. stdio transport.
 //
 //   node dist/mcp.js [rootDir]        # rootDir = default gate directory
 //   AIWRANGLER_DIR=/path node dist/mcp.js
@@ -10,7 +11,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
-import { configReport, planGate, checkGate, ackGate, overrideGate, loopResetGate, resolveGateDir } from "./core.js"
+import {
+  ACK_WRITE_REFUSAL,
+  OVERRIDE_WRITE_REFUSAL,
+  configReport,
+  planGate,
+  checkGate,
+  isAckWriteAttempt,
+  isOverrideWriteAttempt,
+  listPendingAck,
+  reportOverrides,
+  loopResetGate,
+  resolveGateDir,
+} from "./core.js"
 
 const rootArg = process.argv.slice(2).find((a) => !a.startsWith("-"))
 if (process.env.AIWRANGLER_DIR === undefined && rootArg !== undefined) {
@@ -100,22 +113,21 @@ server.registerTool(
   "wrangler_ack",
   {
     description:
-      'AiWrangler human-confirmation flow. Call with NO arguments to list the pending human-severity findings (and their diffHash) from the latest gate run. Call with rules (e.g. ["RULE-10"] or ["*"]) ONLY after the user has explicitly reviewed and approved those findings in conversation: it records an owner acknowledgment so the next wrangler_check passes the human-severity findings for that exact diff. Never ack without explicit user approval; never ack to skip work; block-severity findings cannot be acked.',
+      "AiWrangler read-only HUMAN REVIEW list. Reports pending human-severity findings and the diff hash from the latest gate run. This tool cannot acknowledge findings. Approval is an out-of-band owner step: run `aiwrangler ack` in a terminal. Passing rules, note, or diffHash is rejected and records nothing.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
-      rules: z.array(z.string()).optional().describe('rule IDs to acknowledge, e.g. ["RULE-10"] or ["*"] for all human findings'),
-      note: z.string().optional().describe("what the user approved and why (recorded in the audit ledger)"),
-      diffHash: z.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run"),
+      rules: z.array(z.string()).optional().describe("rejected; acknowledgments are not available over MCP"),
+      note: z.string().optional().describe("rejected; acknowledgments are not available over MCP"),
+      diffHash: z.string().optional().describe("rejected; acknowledgments are not available over MCP"),
       dir: dirArg,
     },
   },
-  async ({ rules, note, diffHash, dir }) => ({
-    content: [
-      {
-        type: "text",
-        text: safe(() => ackGate(resolveGateDir(dir), { ...(rules ? { rules } : {}), ...(note ? { note } : {}), ...(diffHash ? { diffHash } : {}), by: "mcp" })),
-      },
-    ],
-  }),
+  async ({ rules, note, diffHash, dir }) => {
+    if (isAckWriteAttempt({ rules, note, diffHash })) {
+      return { isError: true, content: [{ type: "text" as const, text: ACK_WRITE_REFUSAL }] }
+    }
+    return { content: [{ type: "text" as const, text: safe(() => listPendingAck(resolveGateDir(dir))) }] }
+  },
 )
 
 async function main() {
@@ -128,7 +140,8 @@ server.registerTool(
   "wrangler_override",
   {
     description:
-      "AiWrangler runtime override control. Call with NO arguments to report the active overrides. Call with set {activePolicy?, egressSemantic?, actionThreshold?, reviewThreshold?, gates: {name: bool}} to change the effective gates/policy, ONLY after explicit user approval; overrides auto-expire on the next PASS verdict and every change is audited in the ledger. Call with clear: true to remove them. Strict is always the resting state.",
+      "AiWrangler read-only override report. With no write arguments, reports active runtime overrides. This tool cannot set or clear overrides. The owner runs `aiwrangler override` in a terminal. Passing set, clear, or note is rejected and changes nothing. Overrides a human sets still expire on the next PASS.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       set: z
         .object({
@@ -139,20 +152,18 @@ server.registerTool(
           gates: z.record(z.string(), z.boolean()).optional(),
         })
         .optional()
-        .describe("the overrides to apply (validated; unknown policies/gates are rejected)"),
-      clear: z.boolean().optional().describe("remove any active overrides"),
-      note: z.string().optional().describe("why the user approved this override (audited)"),
+        .describe("rejected; override changes are not available over MCP"),
+      clear: z.boolean().optional().describe("rejected; override changes are not available over MCP"),
+      note: z.string().optional().describe("rejected; override changes are not available over MCP"),
       dir: dirArg,
     },
   },
-  async ({ set, clear, note, dir }) => ({
-    content: [
-      {
-        type: "text",
-        text: safe(() => overrideGate(resolveGateDir(dir), { ...(set ? { set } : {}), ...(clear ? { clear } : {}), ...(note ? { note } : {}), by: "mcp" })),
-      },
-    ],
-  }),
+  async ({ set, clear, note, dir }) => {
+    if (isOverrideWriteAttempt({ set, clear, note })) {
+      return { isError: true, content: [{ type: "text" as const, text: OVERRIDE_WRITE_REFUSAL }] }
+    }
+    return { content: [{ type: "text" as const, text: safe(() => reportOverrides(resolveGateDir(dir))) }] }
+  },
 )
 
 server.registerTool(

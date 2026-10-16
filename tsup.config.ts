@@ -6,6 +6,7 @@ export default defineConfig({
     tools: "src/tools.ts",
     plugin: "src/plugin.ts",
     mcp: "src/mcp.ts",
+    cli: "src/cli.ts",
   },
   format: ["esm"],
   dts: { entry: ["src/index.ts"] },

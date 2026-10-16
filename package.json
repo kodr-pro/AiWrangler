@@ -25,6 +25,7 @@
     "node": ">=20"
   },
   "bin": {
+    "aiwrangler": "./dist/cli.js",
     "aiwrangler-mcp": "./dist/mcp.js"
   },
   "exports": {
@@ -50,7 +51,8 @@
     "verify:p3": "tsx scripts/verify-p3.ts",
     "verify:p4": "tsx scripts/verify-p4.ts",
     "verify:p5": "tsx scripts/verify-p5.ts",
-    "verify:mcp": "tsx scripts/verify-mcp.ts"
+    "verify:mcp": "tsx scripts/verify-mcp.ts",
+    "verify:cli": "tsx scripts/verify-cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
