@@ -20,7 +20,7 @@ export interface CliIO {
   error: Writable
 }
 
-const HELP = `aiwrangler — owner commands for HUMAN REVIEW acks and runtime overrides.
+const HELP = `aiwrangler: owner commands for HUMAN REVIEW acks and runtime overrides.
 
 Inside Cursor or opencode, prefer the MCP tools: a write asks you in the
 editor (elicitation) or a desktop dialog. This CLI is the terminal path.
