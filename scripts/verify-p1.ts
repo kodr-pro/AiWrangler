@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { parseUnifiedDiff } from "../src/git/diff.js"
 import { checkRepoDiff, checkCommitMessage } from "../src/gates/deterministic/rules.js"
 import { loadConfig } from "../src/config.js"
@@ -123,25 +125,40 @@ const superPath = expandPath(loaded.config.repos.super, loaded.root)
 const dirs = repoDirs(loaded.config, loaded.root)
 let totalCommits = 0
 let blocks = 0
+let cleared = 0
 let reviews = 0
 let humans = 0
+// Scan HEAD, not the main ref. A pull request checkout's main ref is the
+// base, so scanning main never sees the commits the PR itself is adding.
+// A block finding in an older commit counts only while that line is still
+// in the tree: history cannot be rewritten after merge, but the violation
+// has to be gone from the code CI is about to ship.
+function blockStillPresent(dir: string, file: string, evidence: string): boolean {
+  const path = join(dir, file)
+  if (!existsSync(path)) return false
+  const needle = evidence.trim()
+  if (needle.length === 0) return false
+  return readFileSync(path, "utf8").includes(needle)
+}
 for (const { repo, dir } of dirs.slice(0, 5)) {
-  const commits = recentCommits(dir, 10)
+  const commits = recentCommits(dir, 10, "HEAD")
   for (const c of commits) {
     totalCommits++
     const files = commitDiff(dir, c.sha)
     if (files.length === 0) continue
     const findings = checkRepoDiff({ repo, repoDir: dir, files }, loaded.config)
     for (const f of findings) {
-      if (f.severity === "block") blocks++
-      else if (f.severity === "review") reviews++
+      if (f.severity === "block") {
+        if (blockStillPresent(dir, f.file, f.evidence)) blocks++
+        else cleared++
+      } else if (f.severity === "review") reviews++
       else humans++
     }
   }
 }
 check("history scanned", totalCommits >= 1, `only ${totalCommits}`)
 check("zero block findings on clean history", blocks === 0, `${blocks} block findings`)
-console.log(`        scanned ${totalCommits} commits across ${Math.min(dirs.length, 5)} repos: block=${blocks} review=${reviews} human=${humans}`)
+console.log(`        scanned ${totalCommits} commits across ${Math.min(dirs.length, 5)} repos: block=${blocks} review=${reviews} human=${humans} cleared=${cleared}`)
 void superPath
 
 console.log("")
