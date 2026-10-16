@@ -1,13 +1,15 @@
-// Client-agnostic gate entry points. Both the opencode tools (src/tools.ts)
-// and the MCP server (src/mcp.ts) call these so formatting and ledger
-// behavior stay identical across agent hosts.
+// Client-agnostic gate entry points. Ack and override writes go through
+// requestHumanAck / requestHumanOverride, which ask a human channel
+// (MCP elicitation, an OS dialog, or the CLI's TTY prompt). Tool arguments
+// never authorize a write.
 import { loadConfig, findConfigFile, flattenGates, activeThresholds, expandPath } from "./config.js"
 import { loadCorpus } from "./groundtruth/corpus.js"
 import { sectionsOfKind, effectiveTruth } from "./groundtruth/precedence.js"
 import { Jev } from "./jev/client.js"
 import { runPlanGate } from "./gates/plan/index.js"
 import { runCheck, formatReport } from "./gates/check/run.js"
-import { Ledger, type GateLedgerEntry } from "./ledger.js"
+import { approveOwnerWrite, type ApprovalChannel } from "./approve.js"
+import { Ledger, type ApprovalHost, type GateLedgerEntry, type HumanConfirmation } from "./ledger.js"
 import {
   readRuntimeOverridesFile,
   writeRuntimeOverridesFile,
@@ -164,77 +166,137 @@ export async function checkGate(
   }
 }
 
+export function isAckWriteAttempt(input: {
+  rules?: readonly string[] | undefined
+  note?: string | undefined
+  diffHash?: string | undefined
+}): boolean {
+  return input.rules !== undefined || input.note !== undefined || input.diffHash !== undefined
+}
+
+export function isOverrideWriteAttempt(input: {
+  set?: unknown
+  clear?: boolean | undefined
+  note?: string | undefined
+}): boolean {
+  return input.set !== undefined || input.clear === true || input.note !== undefined
+}
+
+function latestDiffEntry(ledger: Ledger): GateLedgerEntry | undefined {
+  const entries = ledger.read().filter((e): e is GateLedgerEntry => e.kind === "check" || e.kind === "plan")
+  return [...entries].reverse().find((e) => e.diffHash !== undefined)
+}
+
 /**
- * Human-confirmation flow. Two modes:
- *  - list (no rules): report the pending human-severity findings from the
- *    latest gate entry, with the diff hash an ack must reference.
- *  - ack (rules given): append a `kind:"ack"` ledger record so the next
- *    check passes those human findings for that exact diff.
- * Semantics match the ledger ack records; `by` records the host.
- * The caller is responsible for having obtained the owner's explicit
- * approval before acking.
+ * Read-only list of pending human-severity findings. Safe for MCP and
+ * opencode: it never appends an ack.
  */
-export function ackGate(
-  dir: string,
-  input: { rules?: string[]; note?: string; diffHash?: string; by?: string } = {},
-): string {
+export function listPendingAck(dir: string): string {
   try {
     const loaded = loadConfig(dir)
     const ledger = new Ledger(loaded.config, loaded.root)
-
-    if (!input.rules || input.rules.length === 0) {
-      const entries = ledger.read().filter((e): e is GateLedgerEntry => e.kind === "check" || e.kind === "plan")
-      const latest = [...entries].reverse().find((e) => e.diffHash !== undefined)
-      if (!latest) {
-        return "aiwrangler: no gate run recorded yet; run wrangler_check first"
-      }
-      const pending = (latest.findings ?? []).filter((f) => f.severity === "human" && !f.acknowledged)
-      const out = [
-        `pending human review (check at ${latest.ts}, action: ${latest.action})`,
-        `diffHash: ${latest.diffHash}`,
-      ]
-      if (pending.length === 0) {
-        out.push("", "no pending human-severity findings on the latest recorded diff")
-        if (latest.action === "human") out.push("(the human verdict came from the semantic layer; re-run wrangler_check to re-confirm)")
-      } else {
-        out.push("", "findings needing the owner's eyes:")
-        for (const f of pending) out.push(`  ${f.rule}  ${f.subject}  [${f.severity}]`)
-        out.push(
-          "",
-          'to acknowledge after explicit user approval: wrangler_ack with rules (e.g. ["RULE-10"] or ["*"]) and a note.',
-          "block-severity findings can never be acknowledged; fix them instead.",
-        )
-      }
-      return out.join("\n")
+    const latest = latestDiffEntry(ledger)
+    if (!latest) {
+      return "aiwrangler: no gate run recorded yet; run wrangler_check first"
     }
+    const pending = (latest.findings ?? []).filter((f) => f.severity === "human" && !f.acknowledged)
+    const out = [`pending human review (check at ${latest.ts}, action: ${latest.action})`, `diffHash: ${latest.diffHash}`]
+    if (pending.length === 0) {
+      out.push("", "no pending human-severity findings on the latest recorded diff")
+      if (latest.action === "human") out.push("(the human verdict came from the semantic layer; re-run wrangler_check to re-confirm)")
+    } else {
+      const example = pending
+        .map((f) => f.rule)
+        .slice(0, 8)
+        .join(",")
+      out.push("", "findings needing the owner's eyes:")
+      for (const f of pending) out.push(`  ${f.rule}  ${f.subject}  [${f.severity}]`)
+      out.push(
+        "",
+        "the agent cannot answer the approval prompt. Call wrangler_ack with those rules to ask the owner in the editor,",
+        `or the owner can run \`aiwrangler ack --rules ${example}\` in a terminal.`,
+        "the ack binds to the diffHash above and is void if the diff changes.",
+        "block-severity findings can never be acknowledged; fix them instead.",
+      )
+    }
+    return out.join("\n")
+  } catch (err) {
+    return `aiwrangler ack error: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
 
+export interface PlannedAck {
+  ok: true
+  rules: string[]
+  diffHash: string
+  note?: string
+  summary: string
+}
+
+export type AckPlan = PlannedAck | { ok: false; message: string }
+
+/** Validate an ack and build the human-facing summary. Does not write. */
+export function planAck(dir: string, input: { rules: string[]; note?: string; diffHash?: string }): AckPlan {
+  try {
+    const loaded = loadConfig(dir)
+    const ledger = new Ledger(loaded.config, loaded.root)
     const rules = input.rules.filter((r) => typeof r === "string" && r.length > 0)
-    if (rules.length === 0) {
-      return 'aiwrangler: rules must be a non-empty array (use ["*"] to ack all human findings)'
-    }
+    if (rules.length === 0) return { ok: false, message: 'aiwrangler: rules must be a non-empty array (use ["*"] to ack all human findings)' }
     let diffHash = input.diffHash
     if (!diffHash) {
-      const entries = ledger.read().filter((e): e is GateLedgerEntry => e.kind === "check" || e.kind === "plan")
-      const latest = [...entries].reverse().find((e) => e.diffHash !== undefined)
-      diffHash = latest?.diffHash
-      if (!diffHash) return "aiwrangler: no recorded gate run to ack; run wrangler_check first (or pass diffHash explicitly)"
+      diffHash = latestDiffEntry(ledger)?.diffHash
+      if (!diffHash) return { ok: false, message: "aiwrangler: no recorded gate run to ack; run wrangler_check first (or pass diffHash explicitly)" }
     }
-    if (!/^[0-9a-f]{16,64}$/.test(diffHash)) return "aiwrangler: invalid diffHash"
-    const known = ledger
+    if (!/^[0-9a-f]{16,64}$/.test(diffHash)) return { ok: false, message: "aiwrangler: invalid diffHash" }
+    const match = ledger
       .read()
-      .some((e) => (e.kind === "check" || e.kind === "plan") && e.diffHash === diffHash)
-    if (!known) return "aiwrangler: diffHash not found in ledger; run wrangler_check for that diff first"
+      .filter((e): e is GateLedgerEntry => (e.kind === "check" || e.kind === "plan") && e.diffHash === diffHash)
+      .at(-1)
+    if (!match) return { ok: false, message: "aiwrangler: diffHash not found in ledger; run wrangler_check for that diff first" }
+    const note = input.note && input.note.trim() ? input.note.trim().slice(0, 500) : undefined
+    const pending = (match.findings ?? []).filter((f) => f.severity === "human")
+    const summary = [
+      "AiWrangler: approve acknowledging these HUMAN REVIEW findings?",
+      `rules: ${rules.join(", ")}`,
+      `diffHash: ${diffHash}`,
+      ...(note ? [`note: ${note}`] : []),
+      "findings on that diff:",
+      ...(pending.length > 0 ? pending.slice(0, 20).map((f) => `  ${f.rule}  ${f.subject}  [${f.severity}]`) : ["  (no human-severity rows stored on that run)"]),
+      "The agent cannot answer this prompt. Approve only if you reviewed the diff.",
+      "Block-severity findings are never covered. A diff change voids the ack.",
+    ].join("\n")
+    return { ok: true, rules: rules.slice(0, 50), diffHash, summary, ...(note ? { note } : {}) }
+  } catch (err) {
+    return { ok: false, message: `aiwrangler ack error: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+/**
+ * Record an owner acknowledgment bound to a diff hash. `confirmation` comes
+ * from a human channel (elicitation, OS dialog, or TTY), never from tool args.
+ * Block-severity findings are never covered. A later diff change voids the ack.
+ */
+export function acknowledgeFindings(
+  dir: string,
+  input: { rules: string[]; note?: string; diffHash: string; confirmation: HumanConfirmation; by: ApprovalHost },
+): string {
+  try {
+    const planned = planAck(dir, input)
+    if (!planned.ok) return planned.message
+    const loaded = loadConfig(dir)
     const entry = {
       ts: new Date().toISOString(),
       kind: "ack" as const,
-      diffHash,
-      rules: rules.slice(0, 50),
-      ...(input.note && input.note.trim() ? { note: input.note.trim().slice(0, 500) } : {}),
-      by: input.by ?? "agent",
+      diffHash: planned.diffHash,
+      rules: planned.rules,
+      ...(planned.note ? { note: planned.note } : {}),
+      by: input.by,
+      confirmation: input.confirmation,
     }
-    ledger.append(entry)
+    new Ledger(loaded.config, loaded.root).append(entry)
     return [
-      `acknowledged: human-severity findings ${JSON.stringify(entry.rules)} for diff ${diffHash.slice(0, 16)}`,
+      `acknowledged: human-severity findings ${JSON.stringify(entry.rules)} for diff ${planned.diffHash.slice(0, 16)}`,
+      `recorded by ${input.by} (confirmation: ${input.confirmation})`,
       "the next wrangler_check on this exact diff will pass them with an owner-acknowledged reason.",
       "any diff change voids the ack; block-severity findings are never ackable.",
     ].join("\n")
@@ -243,64 +305,167 @@ export function ackGate(
   }
 }
 
-/**
- * Runtime override control (ported from the retired webui control panel).
- * Modes: no args = report current overrides; set = write validated overrides
- * that expire on the next PASS; clear = remove them. Every write/clear is
- * audited as a ledger `kind:"override"` record.
- */
-export function overrideGate(
+/** Validate, ask the human, then append the ack. Tool arguments alone never write. */
+export async function requestHumanAck(
   dir: string,
-  input: { set?: RuntimeOverrides; clear?: boolean; note?: string; by?: string } = {},
-): string {
+  input: { rules: string[]; note?: string; diffHash?: string },
+  channel: ApprovalChannel & { by: ApprovalHost },
+): Promise<string> {
+  const planned = planAck(dir, input)
+  if (!planned.ok) return planned.message
+  const approval = await approveOwnerWrite(planned.summary, channel)
+  if (!approval.ok) return approval.message
+  return acknowledgeFindings(dir, {
+    rules: planned.rules,
+    diffHash: planned.diffHash,
+    confirmation: approval.confirmation,
+    by: channel.by,
+    ...(planned.note ? { note: planned.note } : {}),
+  })
+}
+
+/**
+ * Read-only report of active runtime overrides. Safe for MCP and opencode.
+ */
+export function reportOverrides(dir: string): string {
   try {
     const loaded = loadConfig(dir)
-    const ledger = new Ledger(loaded.config, loaded.root)
-    const by = input.by ?? "agent"
-
-    if (input.clear) {
-      const existed = clearRuntimeOverrides(loaded.config, loaded.root)
-      if (existed) {
-        ledger.append({ ts: new Date().toISOString(), kind: "override", source: by, changes: { cleared: "manual" } })
-      }
-      return existed ? "runtime overrides cleared; strict is the resting state again" : "no runtime overrides were active"
-    }
-
-    if (input.set) {
-      let appliedGates: string[] = []
-      try {
-        appliedGates = applyRuntimeOverrides(loaded.config, input.set).appliedGates
-      } catch (err) {
-        return `aiwrangler: invalid overrides: ${err instanceof Error ? err.message : String(err)}`
-      }
-      writeRuntimeOverridesFile(loaded.config, loaded.root, {
-        version: 1,
-        createdAt: new Date().toISOString(),
-        ...(input.note && input.note.trim() ? { note: input.note.trim().slice(0, 300) } : {}),
-        expiresOn: "pass",
-        overrides: input.set,
-      })
-      ledger.append({
-        ts: new Date().toISOString(),
-        kind: "override",
-        source: by,
-        changes: input.set as unknown as Record<string, unknown>,
-      })
-      const gateNote = appliedGates.length > 0 ? `; gates applied: ${appliedGates.join(", ")}` : ""
-      return `runtime overrides ACTIVE (expire on next PASS, audited)${gateNote}`
-    }
-
     const file = readRuntimeOverridesFile(loaded.config, loaded.root)
-    if (!file) return "runtime overrides: none active (strict defaults in effect)"
+    if (!file) return "runtime overrides: none active (strict defaults in effect). The owner sets them with `aiwrangler override`."
     return [
       "runtime overrides ACTIVE:",
       JSON.stringify(file.overrides, null, 2),
       `created: ${file.createdAt}  expiresOn: ${file.expiresOn}${file.note ? `  note: ${file.note}` : ""}`,
       "they auto-expire on the next PASS verdict; wrangler_config shows the effective state.",
+      "to change them, call wrangler_override with set or clear. That asks the owner; it does not apply the change by itself.",
+      "the owner can also run `aiwrangler override` in a terminal.",
     ].join("\n")
   } catch (err) {
     return `aiwrangler override error: ${err instanceof Error ? err.message : String(err)}`
   }
+}
+
+export type OverridePlan =
+  | { ok: false; message: string }
+  | { ok: true; kind: "noop"; message: string }
+  | { ok: true; kind: "clear"; note?: string; summary: string }
+  | { ok: true; kind: "set"; set: RuntimeOverrides; note?: string; summary: string; appliedGates: string[] }
+
+/** Validate an override change and build the human-facing summary. Does not write. */
+export function planOverride(dir: string, input: { set?: RuntimeOverrides; clear?: boolean; note?: string }): OverridePlan {
+  try {
+    if (input.clear && input.set) return { ok: false, message: "aiwrangler: pass only one of set or clear; nothing was changed" }
+    const loaded = loadConfig(dir)
+    const note = input.note && input.note.trim() ? input.note.trim().slice(0, 300) : undefined
+    if (input.clear) {
+      if (!readRuntimeOverridesFile(loaded.config, loaded.root)) {
+        return { ok: true, kind: "noop", message: "no runtime overrides were active" }
+      }
+      return {
+        ok: true,
+        kind: "clear",
+        summary: [
+          "AiWrangler: clear runtime overrides and restore the strict resting state?",
+          ...(note ? [`note: ${note}`] : []),
+          "The agent cannot answer this prompt.",
+        ].join("\n"),
+        ...(note ? { note } : {}),
+      }
+    }
+    if (!input.set) return { ok: false, message: "aiwrangler: override write needs set or clear" }
+    let appliedGates: string[] = []
+    try {
+      appliedGates = applyRuntimeOverrides(loaded.config, input.set).appliedGates
+    } catch (err) {
+      return { ok: false, message: `aiwrangler: invalid overrides: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    return {
+      ok: true,
+      kind: "set",
+      set: input.set,
+      appliedGates,
+      summary: [
+        "AiWrangler: apply these runtime overrides? They expire on the next PASS.",
+        JSON.stringify(input.set, null, 2),
+        ...(note ? [`note: ${note}`] : []),
+        "The agent cannot answer this prompt.",
+      ].join("\n"),
+      ...(note ? { note } : {}),
+    }
+  } catch (err) {
+    return { ok: false, message: `aiwrangler override error: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+/**
+ * Set or clear runtime overrides after a human confirmation. Writes expire on
+ * the next PASS. The ledger records the host and the confirmation method.
+ */
+export function writeOverrides(
+  dir: string,
+  input: { set?: RuntimeOverrides; clear?: boolean; note?: string; confirmation: HumanConfirmation; by: ApprovalHost },
+): string {
+  try {
+    const planned = planOverride(dir, input)
+    if (!planned.ok) return planned.message
+    if (planned.kind === "noop") return planned.message
+    const loaded = loadConfig(dir)
+    const ledger = new Ledger(loaded.config, loaded.root)
+    if (planned.kind === "clear") {
+      const existed = clearRuntimeOverrides(loaded.config, loaded.root)
+      if (existed) {
+        ledger.append({
+          ts: new Date().toISOString(),
+          kind: "override",
+          source: input.by,
+          changes: { cleared: "manual" },
+          confirmation: input.confirmation,
+          ...(planned.note ? { note: planned.note } : {}),
+        })
+      }
+      return existed
+        ? `runtime overrides cleared by ${input.by} (confirmation: ${input.confirmation}); strict is the resting state again`
+        : "no runtime overrides were active"
+    }
+    writeRuntimeOverridesFile(loaded.config, loaded.root, {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      ...(planned.note ? { note: planned.note } : {}),
+      expiresOn: "pass",
+      overrides: planned.set,
+    })
+    ledger.append({
+      ts: new Date().toISOString(),
+      kind: "override",
+      source: input.by,
+      changes: planned.set as unknown as Record<string, unknown>,
+      confirmation: input.confirmation,
+      ...(planned.note ? { note: planned.note } : {}),
+    })
+    const gateNote = planned.appliedGates.length > 0 ? `; gates applied: ${planned.appliedGates.join(", ")}` : ""
+    return `runtime overrides ACTIVE (expire on next PASS, audited, confirmation: ${input.confirmation})${gateNote}`
+  } catch (err) {
+    return `aiwrangler override error: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+/** Validate, ask the human, then write the override. Tool arguments alone never write. */
+export async function requestHumanOverride(
+  dir: string,
+  input: { set?: RuntimeOverrides; clear?: boolean; note?: string },
+  channel: ApprovalChannel & { by: ApprovalHost },
+): Promise<string> {
+  const planned = planOverride(dir, input)
+  if (!planned.ok) return planned.message
+  if (planned.kind === "noop") return planned.message
+  const approval = await approveOwnerWrite(planned.summary, channel)
+  if (!approval.ok) return approval.message
+  return writeOverrides(dir, {
+    confirmation: approval.confirmation,
+    by: channel.by,
+    ...(planned.kind === "clear" ? { clear: true } : { set: planned.set }),
+    ...(planned.note ? { note: planned.note } : {}),
+  })
 }
 
 /**

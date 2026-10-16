@@ -26,12 +26,25 @@ export interface NoticeLedgerEntry {
   message: string
 }
 
+/**
+ * How a human confirmed an ack or override.
+ * `elicitation` is an MCP client UI prompt, `os-dialog` is a native desktop dialog,
+ * and `tty` is the owner typing yes at `aiwrangler` in a terminal.
+ * Tool arguments never count as confirmation.
+ */
+export type HumanConfirmation = "elicitation" | "os-dialog" | "tty"
+
+/** Which trusted entry point recorded the write. Not taken from tool arguments. */
+export type ApprovalHost = "cli" | "mcp" | "opencode"
+
 export interface OverrideLedgerEntry {
   ts: string
   kind: "override"
   source: string
   changes: Record<string, unknown>
   note?: string
+  /** How the human confirmed. Absent on gate expiry and older entries. */
+  confirmation?: HumanConfirmation
 }
 
 export interface AckLedgerEntry {
@@ -40,7 +53,10 @@ export interface AckLedgerEntry {
   diffHash: string
   rules: string[]
   note?: string
+  /** `cli`, `mcp`, or `opencode` for new writes. Older entries may say `agent`. */
   by?: string
+  /** How the human confirmed. Absent on older entries. */
+  confirmation?: HumanConfirmation
 }
 
 export type LedgerEntry = GateLedgerEntry | NoticeLedgerEntry | OverrideLedgerEntry | AckLedgerEntry

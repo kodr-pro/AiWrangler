@@ -1,6 +1,7 @@
-// AiWrangler MCP server: exposes the gates (config / plan / check / ack /
-// override / loop-reset) to any MCP client (Cursor, Claude Code, Windsurf,
-// ...). stdio transport.
+// AiWrangler MCP server. Ack and override writes ask the human through MCP
+// elicitation (the client UI). If the client has no form elicitation, the
+// server falls back to a native desktop dialog. Tool arguments never authorize
+// a write by themselves. stdio transport.
 //
 //   node dist/mcp.js [rootDir]        # rootDir = default gate directory
 //   AIWRANGLER_DIR=/path node dist/mcp.js
@@ -10,7 +11,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
-import { configReport, planGate, checkGate, ackGate, overrideGate, loopResetGate, resolveGateDir } from "./core.js"
+import type { ElicitOutcome } from "./approve.js"
+import {
+  configReport,
+  planGate,
+  checkGate,
+  isAckWriteAttempt,
+  isOverrideWriteAttempt,
+  listPendingAck,
+  reportOverrides,
+  requestHumanAck,
+  requestHumanOverride,
+  loopResetGate,
+  resolveGateDir,
+} from "./core.js"
+import type { RuntimeOverrides } from "./overrides.js"
 
 const rootArg = process.argv.slice(2).find((a) => !a.startsWith("-"))
 if (process.env.AIWRANGLER_DIR === undefined && rootArg !== undefined) {
@@ -96,26 +111,65 @@ function safe(fn: () => string): string {
   }
 }
 
+const decisionSchema = {
+  type: "object" as const,
+  properties: {
+    decision: {
+      type: "string" as const,
+      title: "Decision",
+      description: "Approve records this write. Deny leaves the gate unchanged.",
+      enum: ["approve", "deny"],
+      enumNames: ["Approve", "Deny"],
+    },
+  },
+  required: ["decision"],
+}
+
+/** Ask the MCP client UI. Unsupported clients fall through to the OS dialog. */
+async function elicitDecision(summary: string): Promise<ElicitOutcome> {
+  try {
+    const result = await server.server.elicitInput({
+      mode: "form",
+      message: summary,
+      requestedSchema: decisionSchema,
+    })
+    if (result.action === "accept" && result.content?.decision === "approve") return "approve"
+    return "deny"
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message.toLowerCase().includes("does not support") && message.toLowerCase().includes("elicit")) return "unsupported"
+    return { error: message }
+  }
+}
+
+function toolResult(text: string): { isError?: boolean; content: { type: "text"; text: string }[] } {
+  return { ...(text.startsWith("aiwrangler:") ? { isError: true } : {}), content: [{ type: "text", text }] }
+}
+
 server.registerTool(
   "wrangler_ack",
   {
     description:
-      'AiWrangler human-confirmation flow. Call with NO arguments to list the pending human-severity findings (and their diffHash) from the latest gate run. Call with rules (e.g. ["RULE-10"] or ["*"]) ONLY after the user has explicitly reviewed and approved those findings in conversation: it records an owner acknowledgment so the next wrangler_check passes the human-severity findings for that exact diff. Never ack without explicit user approval; never ack to skip work; block-severity findings cannot be acked.',
+      "AiWrangler HUMAN REVIEW. With no rules, note, or diffHash, lists pending human-severity findings and the diff hash. Passing rules requests an acknowledgment. Those arguments do not approve it: the server asks the human with an MCP elicitation prompt (findings, rules, diff hash, and note), or a desktop dialog if this client has no elicitation. Nothing is recorded unless the human approves. Block-severity findings cannot be acked. A diff change voids the ack.",
+    annotations: { readOnlyHint: false, destructiveHint: false },
     inputSchema: {
-      rules: z.array(z.string()).optional().describe('rule IDs to acknowledge, e.g. ["RULE-10"] or ["*"] for all human findings'),
-      note: z.string().optional().describe("what the user approved and why (recorded in the audit ledger)"),
-      diffHash: z.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run"),
+      rules: z.array(z.string()).optional().describe('rule IDs to ask the owner to acknowledge, e.g. ["RULE-10"] or ["*"]. Does not approve by itself.'),
+      note: z.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
+      diffHash: z.string().optional().describe("diff hash from the check report; defaults to the latest recorded gate run. Does not approve by itself."),
       dir: dirArg,
     },
   },
-  async ({ rules, note, diffHash, dir }) => ({
-    content: [
-      {
-        type: "text",
-        text: safe(() => ackGate(resolveGateDir(dir), { ...(rules ? { rules } : {}), ...(note ? { note } : {}), ...(diffHash ? { diffHash } : {}), by: "mcp" })),
-      },
-    ],
-  }),
+  async ({ rules, note, diffHash, dir }) => {
+    if (!isAckWriteAttempt({ rules, note, diffHash })) {
+      return { content: [{ type: "text" as const, text: safe(() => listPendingAck(resolveGateDir(dir))) }] }
+    }
+    const text = await requestHumanAck(
+      resolveGateDir(dir),
+      { rules: rules ?? [], ...(note !== undefined ? { note } : {}), ...(diffHash !== undefined ? { diffHash } : {}) },
+      { by: "mcp", elicit: elicitDecision },
+    )
+    return toolResult(text)
+  },
 )
 
 async function main() {
@@ -128,7 +182,8 @@ server.registerTool(
   "wrangler_override",
   {
     description:
-      "AiWrangler runtime override control. Call with NO arguments to report the active overrides. Call with set {activePolicy?, egressSemantic?, actionThreshold?, reviewThreshold?, gates: {name: bool}} to change the effective gates/policy, ONLY after explicit user approval; overrides auto-expire on the next PASS verdict and every change is audited in the ledger. Call with clear: true to remove them. Strict is always the resting state.",
+      "AiWrangler runtime overrides. With no set, clear, or note, reports active overrides. Passing set or clear requests a change. Those arguments do not apply it: the server asks the human with an MCP elicitation prompt, or a desktop dialog if this client has no elicitation. Nothing changes unless the human approves. Overrides expire on the next PASS.",
+    annotations: { readOnlyHint: false, destructiveHint: true },
     inputSchema: {
       set: z
         .object({
@@ -139,20 +194,27 @@ server.registerTool(
           gates: z.record(z.string(), z.boolean()).optional(),
         })
         .optional()
-        .describe("the overrides to apply (validated; unknown policies/gates are rejected)"),
-      clear: z.boolean().optional().describe("remove any active overrides"),
-      note: z.string().optional().describe("why the user approved this override (audited)"),
+        .describe("overrides to ask the owner to apply. Does not apply them by itself."),
+      clear: z.boolean().optional().describe("ask the owner to remove active overrides. Does not clear them by itself."),
+      note: z.string().optional().describe("shown to the owner on the approval prompt and stored if they approve"),
       dir: dirArg,
     },
   },
-  async ({ set, clear, note, dir }) => ({
-    content: [
+  async ({ set, clear, note, dir }) => {
+    if (!isOverrideWriteAttempt({ set, clear, note })) {
+      return { content: [{ type: "text" as const, text: safe(() => reportOverrides(resolveGateDir(dir))) }] }
+    }
+    const text = await requestHumanOverride(
+      resolveGateDir(dir),
       {
-        type: "text",
-        text: safe(() => overrideGate(resolveGateDir(dir), { ...(set ? { set } : {}), ...(clear ? { clear } : {}), ...(note ? { note } : {}), by: "mcp" })),
+        ...(set !== undefined ? { set: set as RuntimeOverrides } : {}),
+        ...(clear === true ? { clear: true } : {}),
+        ...(note !== undefined ? { note } : {}),
       },
-    ],
-  }),
+      { by: "mcp", elicit: elicitDecision },
+    )
+    return toolResult(text)
+  },
 )
 
 server.registerTool(
