@@ -44,6 +44,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "test": "npm run verify:p0 && npm run verify:p1 && npm run verify:p2 && npm run verify:p3 && npm run verify:p4 && npm run verify:mcp",
     "verify:p0": "tsx scripts/verify-p0.ts",
     "verify:p1": "tsx scripts/verify-p1.ts",
     "verify:p2": "tsx scripts/verify-p2.ts",
