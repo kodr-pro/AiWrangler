@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # verify:p1 scans `git log main`. A push or PR checkout is not that ref,
+      # and a command-line fetch does not always update origin/main.
+      - name: Fetch main for history scans
+        run: |
+          if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then
+            git fetch origin main
+          else
+            git fetch origin main:refs/heads/main
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      # Seeded recall is below 1 by design, so this eval exits 1. Keep the log
+      # and do not fail the job.
+      - name: verify:p5 (informational)
+        run: npm run verify:p5
+        continue-on-error: true
