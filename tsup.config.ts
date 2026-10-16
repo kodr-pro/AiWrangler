@@ -5,7 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     tools: "src/tools.ts",
     plugin: "src/plugin.ts",
-    "webui/bin": "src/webui/bin.ts",
+    mcp: "src/mcp.ts",
   },
   format: ["esm"],
   dts: { entry: ["src/index.ts"] },
