@@ -79,6 +79,14 @@ client.setRequestHandler(ElicitRequestSchema, async (request) => {
 })
 await client.connect(transport)
 
+const pkgVersion = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version
+const serverInfo = client.getServerVersion()
+check(
+  "server version matches package.json",
+  serverInfo?.name === "aiwrangler" && serverInfo.version === pkgVersion,
+  JSON.stringify(serverInfo),
+)
+
 const listed = await client.listTools()
 const names = listed.tools.map((t) => t.name)
 check("tools/list exposes the six gates", names.join(",") === "wrangler_config,wrangler_plan,wrangler_check,wrangler_ack,wrangler_override,wrangler_loop_reset", names.join(","))

@@ -16,6 +16,60 @@ or a terminal. The agent's tool arguments cannot approve it.
 
 It is built for repos where "the agent said it passed" is not good enough.
 
+## Quick start
+
+The Jev semantic judge is the core of AiWrangler. Deterministic rules run
+offline; Jev is what judges claims, scope, and contradictions against your
+spec. Create a key at [console.typesafe.ai/keys](https://console.typesafe.ai/keys)
+and export it:
+
+```bash
+export TYPESAFE_API_KEY=apikey_...
+```
+
+Without `TYPESAFE_API_KEY`, only the deterministic rules run. The semantic
+judge stays off, and a check is marked degraded (`no-key`) so a missing key
+is not a silent pass.
+
+Node 20+ is enough. `npx` fetches the package; you do not need to clone
+this repo. `npx -y aiwrangler` is the owner CLI (`ack`, `override`). The
+MCP server is the `aiwrangler-mcp` binary from the same package.
+
+Cursor, `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "aiwrangler": {
+      "command": "npx",
+      "args": ["-y", "--package", "aiwrangler", "aiwrangler-mcp"],
+      "env": { "TYPESAFE_API_KEY": "apikey_..." }
+    }
+  }
+}
+```
+
+opencode, `opencode.json` (the project root, or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "aiwrangler": {
+        "type": "local",
+        "command": ["npx", "-y", "--package", "aiwrangler", "aiwrangler-mcp"],
+        "environment": { "TYPESAFE_API_KEY": "{env:TYPESAFE_API_KEY}" }
+      }
+    }
+  }
+}
+```
+
+Copy [`aiwrangler.config.example.json`](aiwrangler.config.example.json) to
+`aiwrangler.config.json` in the repo you want guarded, and point `corpus`
+at your spec, rules, and rulings.
+
 ## What it catches
 
 - **Silent defaults.** A malformed length that becomes `0`, an error that
@@ -62,7 +116,11 @@ state. `wrangler_loop_reset` still clears the retry breaker from the agent.
 
 ## Install
 
-Requires Node 20+ and, for whitepaper ingestion only, `poppler-utils`.
+The published package is [`aiwrangler`](https://www.npmjs.com/package/aiwrangler).
+[Quick start](#quick-start) is the install path: a TypeSafe key, then `npx`.
+
+A source checkout needs Node 20+ and, for whitepaper ingestion only,
+`poppler-utils`:
 
 ```
 git clone https://github.com/kodr-pro/AiWrangler.git
@@ -89,7 +147,9 @@ export { WranglerWatchPlugin } from "aiwrangler/plugin"
 ```
 
 Restart opencode. The tools appear in every session, and the plugin nudges
-the agent to run the gates at the right moments. Prefer the MCP server
+the agent to run the gates at the right moments. `@opencode-ai/plugin` is an
+optional peer dependency: opencode provides it, and the MCP server and the
+`aiwrangler` CLI do not load it. Prefer the MCP server
 inside opencode for approvals: it can show an elicitation form in the
 editor. The native tools above have no MCP session, so a write falls back
 to a desktop dialog. Neither path treats the agent's arguments as a yes.
@@ -105,23 +165,14 @@ One server serves every workspace: each tool accepts an optional `dir`
 argument (the workspace root), falling back to the server's startup
 directory or `AIWRANGLER_DIR`.
 
-Cursor, global MCP config: (`~/.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "aiwrangler": { "command": "node", "args": ["/path/to/AiWrangler/dist/mcp.js"] }
-  }
-}
-```
-
-or: `cursor mcp add --global aiwrangler -- node /path/to/AiWrangler/dist/mcp.js`
-
-Claude Code:
+Cursor and opencode configs are in [Quick start](#quick-start). The same
+`npx` command works for Claude Code:
 
 ```
-claude mcp add aiwrangler -- node /path/to/AiWrangler/dist/mcp.js
+claude mcp add aiwrangler -- npx -y --package aiwrangler aiwrangler-mcp
 ```
+
+A source checkout can pass `node dist/mcp.js` instead of `npx`.
 
 Pair it with a rule in your agent's instructions (e.g.
 `~/.cursor/rules/aiwrangler.mdc`) that pins the lifecycle: call
@@ -183,7 +234,7 @@ use them:
 import { loadConfig, loadCorpus, runCheck } from "aiwrangler"
 ```
 
-## Quick start
+## Configure a repository
 
 1. Copy [`aiwrangler.config.example.json`](aiwrangler.config.example.json)
    to `aiwrangler.config.json` in the repository you want guarded.
@@ -285,15 +336,6 @@ and does not gate on it. All of them run against the fixture corpus in
 `npm run build` (`verify:p4`, `verify:mcp`, and `verify:cli` execute the bundles in `dist/`).
 Live semantic checks activate automatically when `TYPESAFE_API_KEY` is set.
 
-## Support
-
-If AiWrangler catches something your review would have missed, you can buy
-the author a coffee:
-
-```
-EVM: 0xa8F045c97BaB4AEF16B5e2d84DE16f581D1C7654
-```
-
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+Apache-2.0. Copyright 2026 kodr-pro. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
