@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Ground-truth guardrails for coding agents: deterministic checks plus calibrated semantic judgments against your own spec, rules, and rulings",
   "type": "module",
-  "license": "GPL-3.0",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kodr-pro/AiWrangler.git"
@@ -18,6 +18,8 @@
     "code-review",
     "ai-safety",
     "opencode",
+    "mcp",
+    "cursor",
     "static-analysis",
     "developer-tools"
   ],
@@ -28,6 +30,11 @@
     "aiwrangler": "./dist/cli.js",
     "aiwrangler-mcp": "./dist/mcp.js"
   },
+  "files": [
+    "dist",
+    "NOTICE",
+    "aiwrangler.config.example.json"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -44,6 +51,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "npm run verify:p0 && npm run verify:p1 && npm run verify:p2 && npm run verify:p3 && npm run verify:p4 && npm run verify:mcp && npm run verify:cli",
     "verify:p0": "tsx scripts/verify-p0.ts",
@@ -57,14 +65,25 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "@opencode-ai/plugin": "1.4.3",
     "@typesafe-ai/sdk": "^0.6.0",
     "zod": "^3.24.0"
   },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.4.3"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opencode-ai/plugin": "1.4.3",
     "@types/node": "^22.10.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

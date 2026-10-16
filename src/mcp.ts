@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // AiWrangler MCP server. Ack and override writes ask the human through MCP
 // elicitation (the client UI). If the client has no form elicitation, the
 // server falls back to a native desktop dialog. Tool arguments never authorize
@@ -26,6 +27,7 @@ import {
   resolveGateDir,
 } from "./core.js"
 import type { RuntimeOverrides } from "./overrides.js"
+import { packageVersion } from "./version.js"
 
 const rootArg = process.argv.slice(2).find((a) => !a.startsWith("-"))
 if (process.env.AIWRANGLER_DIR === undefined && rootArg !== undefined) {
@@ -33,7 +35,7 @@ if (process.env.AIWRANGLER_DIR === undefined && rootArg !== undefined) {
 }
 
 const server = new McpServer(
-  { name: "aiwrangler", version: "0.1.0" },
+  { name: "aiwrangler", version: packageVersion() },
   { capabilities: { logging: {} } },
 )
 

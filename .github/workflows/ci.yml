@@ -41,6 +41,79 @@ jobs:
       - run: npm run build
       - run: npm test
 
+      - name: Pack tarball and launch bins via npx
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination "$RUNNER_TEMP"
+          tarball="$(echo "$RUNNER_TEMP"/aiwrangler-*.tgz)"
+          work="$RUNNER_TEMP/pack-install"
+          mkdir -p "$work"
+          (cd "$work" && npm init -y >/dev/null && npm install "$tarball")
+          if [ -d "$work/node_modules/@opencode-ai/plugin" ]; then
+            echo "optional peer @opencode-ai/plugin was installed with the tarball" >&2
+            exit 1
+          fi
+          help="$(npm exec --prefix "$work" -- aiwrangler --help)"
+          printf '%s\n' "$help" | grep -q "aiwrangler ack"
+          node --input-type=module -e '
+            import { spawn } from "node:child_process"
+            const bin = process.argv[1]
+            const child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] })
+            let err = ""
+            const timer = setTimeout(() => {
+              child.kill("SIGTERM")
+              console.error("timed out waiting for aiwrangler-mcp\\n" + err)
+              process.exit(1)
+            }, 15000)
+            child.stderr.on("data", (buf) => {
+              err += buf.toString()
+              if (err.includes("aiwrangler-mcp: ready")) {
+                clearTimeout(timer)
+                child.kill("SIGTERM")
+              }
+            })
+            child.on("exit", () => {
+              if (!err.includes("aiwrangler-mcp: ready")) {
+                console.error(err)
+                process.exit(1)
+              }
+              process.exit(0)
+            })
+          ' "$work/node_modules/.bin/aiwrangler-mcp"
+          # Same invocation a fresh shell uses: npx -y <pkg> for each bin.
+          empty="$RUNNER_TEMP/npx-empty"
+          mkdir -p "$empty"
+          (cd "$empty" && npx -y --package "$tarball" aiwrangler --help) | grep -q "aiwrangler ack"
+          node --input-type=module -e '
+            import { spawn } from "node:child_process"
+            const tarball = process.argv[1]
+            const cwd = process.argv[2]
+            const child = spawn("npx", ["-y", "--package", tarball, "aiwrangler-mcp"], {
+              cwd,
+              stdio: ["pipe", "pipe", "pipe"],
+            })
+            let err = ""
+            const timer = setTimeout(() => {
+              child.kill("SIGTERM")
+              console.error("timed out waiting for npx aiwrangler-mcp\\n" + err)
+              process.exit(1)
+            }, 60000)
+            child.stderr.on("data", (buf) => {
+              err += buf.toString()
+              if (err.includes("aiwrangler-mcp: ready")) {
+                clearTimeout(timer)
+                child.kill("SIGTERM")
+              }
+            })
+            child.on("exit", () => {
+              if (!err.includes("aiwrangler-mcp: ready")) {
+                console.error(err)
+                process.exit(1)
+              }
+              process.exit(0)
+            })
+          ' "$tarball" "$empty"
+
       # Seeded recall is below 1 by design, so this eval exits 1. Keep the log
       # and do not fail the job.
       - name: verify:p5 (informational)
