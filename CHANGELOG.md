@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.1.0 - 2026-10-16
 
-First npm release of `aiwrangler`.
+First npm release of `aiwrangler`, published as `@kodr/aiwrangler`.
 
 ### Added
 
 - stdio MCP server (`aiwrangler-mcp`) and owner CLI (`aiwrangler`) published as npm binaries.
 - `files`, `engines`, `repository`, and `keywords` metadata, and a `prepublishOnly` build.
+- The package publishes as `@kodr/aiwrangler`: npm's name-similarity policy
+  rejects an unscoped `aiwrangler` as too close to `wrangler`. The binaries
+  are unscoped (`aiwrangler`, `aiwrangler-mcp`), and bin paths carry no
+  `./` prefix, which npm v12 flags as invalid and drops from the manifest.
 - GitHub Actions release workflow that publishes on a `v*` tag through npm
   trusted publishing (OIDC, no long-lived token; provenance automatic).
   0.1.0 was bootstrapped with a one-time interactive local publish because
