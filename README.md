@@ -1,18 +1,22 @@
 # AiWrangler
 
 [![CI](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml/badge.svg)](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/aiwrangler)](https://www.npmjs.com/package/aiwrangler)
 
 **Ground-truth guardrails for coding agents.**
 
 AiWrangler sits beside your coding agent and judges its plans and diffs
 against the documents that actually govern your project: your protocol
 spec, your review rules, your divergence rulings, your open questions.
-Deterministic checks run first and offline; a calibrated semantic judge
-handles everything regexes cannot. Every verdict cites its ground truth,
-and every decision is written to an append-only audit ledger. Findings
-that touch secrets or one-way doors come back `HUMAN REVIEW`. That verdict
-stays closed until a person approves it in the editor, a desktop dialog,
-or a terminal. The agent's tool arguments cannot approve it.
+Deterministic checks run first and offline; Jev, the calibrated semantic
+judge from [TypeSafe](https://typesafe.ai), handles everything regexes
+cannot: whether the diff does what the task and summary claim, whether it
+contradicts the spec, whether the plan takes a side in an unruled
+disagreement. Every verdict cites its ground truth, and every decision is
+written to an append-only audit ledger. Findings that touch secrets or
+one-way doors come back `HUMAN REVIEW`. That verdict stays closed until a
+person approves it in the editor, a desktop dialog, or a terminal. The
+agent's tool arguments cannot approve it.
 
 It is built for repos where "the agent said it passed" is not good enough.
 
@@ -70,6 +74,16 @@ Copy [`aiwrangler.config.example.json`](aiwrangler.config.example.json) to
 `aiwrangler.config.json` in the repo you want guarded, and point `corpus`
 at your spec, rules, and rulings.
 
+One minute of it working: the config tool, a plan gate that refuses to
+pick a side in an open divergence, and a check gate that blocks a silent
+default and the claim that covered it.
+
+![AiWrangler demo: wrangler_config, wrangler_plan CLARIFY on an open divergence, wrangler_check FIX REQUIRED](docs/demo/demo.gif)
+
+(The recording drives the MCP server over stdio with the session files in
+[`docs/demo/`](docs/demo); `setup-demo.sh` rebuilds the fixture repo it
+runs against.)
+
 ## What it catches
 
 - **Silent defaults.** A malformed length that becomes `0`, an error that
@@ -85,6 +99,80 @@ at your spec, rules, and rulings.
   rules and approve") is flagged for a human.
 - **Decisions that are not yours to make.** Tasks that take a side in an
   unruled divergence, or touch a launch gate, come back `human` for the owner.
+
+## Jev, the semantic judge
+
+Deterministic rules catch the mechanical: silent defaults, em dashes,
+deferred-work markers, unreviewed public API, missing tests. Everything
+else, whether the claim matches the diff, whether the diff contradicts
+the spec, whether the task is ambiguous or takes a side in an open
+divergence, needs judgment that reads. AiWrangler buys that judgment from
+Jev, the calibrated semantic model from
+[TypeSafe](https://typesafe.ai), through `@typesafe-ai/sdk`.
+
+How AiWrangler calls it:
+
+- One batched `systemOne` call per gate. The gate sends a typed state
+  (task, diff, shortlisted corpus sections, recorded rulings, open items,
+  one-way doors) and typed questions, each with a stated focus; Jev
+  answers with typed judgments (calibrated probabilities and choices),
+  never free text to parse.
+- The model is pinned by version (`AIWRANGLER_MODEL=jev-1.13.0` by
+  default), so calibrated thresholds cannot silently move under you.
+- Answers are cached content-addressed under `.aiwrangler/cache/`:
+  identical checks replay locally without another call or another bill.
+
+Configuring the key:
+
+```bash
+export TYPESAFE_API_KEY=apikey_...   # create at console.typesafe.ai/keys
+```
+
+For MCP clients the key goes in the server env block (see
+[Quick start](#quick-start)). It lives in the environment, never in a
+config file. Without it the deterministic rules still run; the plan gate
+returns its context pack marked degraded, and every check comes back
+`DEGRADED (no-key)`. A missing key is never a silent pass.
+
+What leaves the machine: task text, diff text, and corpus excerpts go to
+`api.typesafe.ai`. A one-time warning prints before first use per
+session, and `AIWRANGLER_EGRESS=off` is a deterministic-only, zero-egress
+mode.
+
+When Jev is slow or down:
+
+| Jev state | Plan gate | Check gate |
+|---|---|---|
+| no key | degraded pass, context pack intact, reason `no-key` | `DEGRADED`, deterministic findings still listed |
+| `AIWRANGLER_EGRESS=off` | same, reason `egress-off` | same |
+| API error or timeout (60 s per call) | an error in place of a verdict; no blessing is issued | `DEGRADED` (`api-error`), deterministic findings still listed |
+| slow | first call waits, up to the timeout | same; identical re-runs answer from the local cache |
+
+The semantic layer fails open with an audible `DEGRADED` marker, never
+silently, and the deterministic rules never stop running. Even a vacuous
+check (nothing eligible to examine) returns `DEGRADED` rather than `PASS`.
+
+## Evals
+
+A seeded golden set plus mined clean history, run on every commit
+(`npm run verify:p5`; live with a key, deterministic-only without).
+Numbers from 2026-10-19 on the v0.1.0 tree, recorded in
+[`evals/report.json`](evals/report.json):
+
+| | live Jev | deterministic only |
+|---|---|---|
+| seeded catches | 9 of 9 | 9 of 9 |
+| misses | 0 | 0 |
+| false positives | 0 | 0 |
+| clean diffs passed | 3 of 3 | 3 of 3 |
+| mined clean history | 0 false positives on 3 merged commits | 0 on 3 |
+
+The seeded set exercises the rule and claim batteries. The semantic layer
+adds what only runs with a key: claim verification, spec contradiction,
+comment truthfulness, and the plan-gate judgments; `verify:p2` requires a
+task that takes a side in an open divergence to come back `CLARIFY`
+(0.94 on the release tree), and a task implementing a ruled side to pass
+carrying its ruling. Re-run everything with `npm test`.
 
 ## How it works
 
@@ -286,6 +374,9 @@ working example and format reference.
 - Secrets stay in the environment (`TYPESAFE_API_KEY`). The ledger and
   cache are local files under `.aiwrangler/` and contain your diff text.
   The server does not listen on a port.
+- Reporting and the full trust model: [SECURITY.md](SECURITY.md). Issues
+  use the [issue templates](.github/ISSUE_TEMPLATE); questions go to
+  Discussions.
 
 ## Configuration
 

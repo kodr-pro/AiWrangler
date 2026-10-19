@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/kodr-pro/AiWrangler/discussions
+    about: How to point the corpus at your spec, or wire a client. Ask in Discussions.

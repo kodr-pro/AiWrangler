@@ -14,9 +14,17 @@ First npm release of `aiwrangler`.
 - stdio MCP server (`aiwrangler-mcp`) and owner CLI (`aiwrangler`) published as npm binaries.
 - `files`, `engines`, `repository`, and `keywords` metadata, and a `prepublishOnly` build.
 - GitHub Actions release workflow that publishes on a `v*` tag with npm provenance (`NPM_TOKEN`).
+- `SECURITY.md` and GitHub issue templates.
+- README: a Jev section (call shape, key configuration, slow and down
+  behavior), an eval table, and a reproducible MCP-over-stdio demo under
+  `docs/demo/` (session files, setup script, vhs tape).
 
 ### Changed
 
 - License is Apache-2.0, copyright kodr-pro. Source previously carried GPL-3.0 and was not published to npm.
 - The MCP server reports the version from `package.json`.
+- `verify:p2` no longer expects escalation for a task that implements the ruled
+  side of divergence D-1 (MuSig2 is the recorded ruling); it now asserts
+  pass-with-ruling-context and adds a check that a task taking a side in the
+  open D-3 divergence is escalated.
 - `@opencode-ai/plugin` is an optional peer dependency, required only for the native opencode tools and watch plugin.

@@ -54,7 +54,7 @@ if (live) {
   console.log("        reasons: " + vague.reasons.join(" | ").slice(0, 200))
 
   console.log("")
-  console.log("4. live plan gate: task touching an open question area")
+  console.log("4. live plan gate: task implementing the ruled side of a divergence")
   const sigTask = await runPlanGate(loaded.config, jev, corpus, {
     task:
       "switch committee certificate signing from FROST to MuSig2 in the worker crate, updating the signing path and tests; on malformed signatures return a SignatureError",
@@ -62,10 +62,35 @@ if (live) {
   console.log(`        action=${sigTask.action}`)
   console.log("        reasons: " + sigTask.reasons.join(" | ").slice(0, 300))
   for (const v of sigTask.verdicts) console.log(`        ${v.question.padEnd(22)} ${v.noul.toFixed(2)} ${v.interpretation}${v.subject ? " [" + v.subject + "]" : ""}`)
-  check("signature task surfaces open divergence or question", sigTask.reasons.some((r) => r.includes("Q-1") || r.includes("DIV-") || r.includes("divergence")) || sigTask.action !== "pass")
+  check("ruled-side task passes", sigTask.action === "pass", sigTask.reasons.join("; "))
+  check(
+    "ruled-side task carries the ruling in its context pack",
+    sigTask.contextPack.rulings.some((s) => s.id === "DIV-D-1"),
+    sigTask.contextPack.rulings.map((s) => s.id).join(","),
+  )
+  check(
+    "ruled-side task is not blocked as taking a side",
+    !sigTask.reasons.some((r) => r.includes("takes a side")),
+    sigTask.reasons.join("; "),
+  )
 
   console.log("")
-  console.log("5. live plan gate: clean well-specified task")
+  console.log("5. live plan gate: task taking a side in an open divergence")
+  const openSideTask = await runPlanGate(loaded.config, jev, corpus, {
+    task:
+      "pin MVCC snapshots to a fixed 64-version retention window in the store crate, forcing a refresh when a snapshot pins more than 64 versions; on refresh return SnapshotStale",
+  })
+  console.log(`        action=${openSideTask.action}`)
+  console.log("        reasons: " + openSideTask.reasons.join(" | ").slice(0, 300))
+  for (const v of openSideTask.verdicts) console.log(`        ${v.question.padEnd(22)} ${v.noul.toFixed(2)} ${v.interpretation}${v.subject ? " [" + v.subject + "]" : ""}`)
+  check(
+    "open-divergence task is escalated",
+    openSideTask.reasons.some((r) => r.includes("D-3") || r.includes("divergence")) || openSideTask.action !== "pass",
+    openSideTask.reasons.join("; "),
+  )
+
+  console.log("")
+  console.log("6. live plan gate: clean well-specified task")
   const clean = await runPlanGate(loaded.config, jev, corpus, {
     task:
       "add a unit test in the core crate that verifies canonical_bytes produces stable output for a fixed capnp struct; the test fails if the bytes change",
@@ -75,7 +100,7 @@ if (live) {
   check("clean task -> pass", clean.action === "pass", clean.reasons.join("; "))
   check("usage recorded", (clean.usage?.inputTokens ?? 0) > 0)
 } else {
-  console.log("3-5. skipped (no TYPESAFE_API_KEY or AIWRANGLER_SKIP_LIVE=1)")
+  console.log("3-6. skipped (no TYPESAFE_API_KEY or AIWRANGLER_SKIP_LIVE=1)")
 }
 
 console.log("")
