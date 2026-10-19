@@ -1,0 +1,25 @@
+name: Feature request
+description: A new check, corpus source, client path, or workflow change.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What an agent got away with, or what you had to check by hand.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed behavior
+      description: What the gate should do, and what verdict it should return. If it needs ground truth, say which document would carry it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Deterministic rule, semantic question, or doing nothing.
+    validations:
+      required: false

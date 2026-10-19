@@ -1,0 +1,53 @@
+name: Bug report
+description: A gate missed a finding, flagged a false positive, or failed to run.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys and private diff content before posting. The ledger
+        under `.aiwrangler/` contains your diff text: paste only the lines
+        that matter.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the gate returned, and what you expected instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Cursor (MCP)
+        - Claude Code (MCP)
+        - opencode (MCP)
+        - opencode (native tools)
+        - CLI
+        - Library
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: aiwrangler version, client version, node version, OS
+      placeholder: aiwrangler 0.1.0, Cursor 1.x, node 22, macOS
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The tool call or CLI command, the corpus shape (spec, rules, divergences), and the task or diff text, redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: verdict
+    attributes:
+      label: Gate output
+      description: The verdict block or the redacted ledger entry. `aiwrangler ack` with no arguments lists pending findings and the diff hash.
+    validations:
+      required: false

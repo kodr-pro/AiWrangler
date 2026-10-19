@@ -114,8 +114,8 @@ jobs:
             })
           ' "$tarball" "$empty"
 
-      # Seeded recall is below 1 by design, so this eval exits 1. Keep the log
-      # and do not fail the job.
+      # Exits non-zero if seeded recall drops below 1 or any false positive
+      # appears. Informational today: keep the log, do not fail the job.
       - name: verify:p5 (informational)
         run: npm run verify:p5
         continue-on-error: true
