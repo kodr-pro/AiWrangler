@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.1 - 2026-10-19
+
+### Added
+
+- README demo recording (`docs/demo/demo.gif`): config, a plan gate that
+  escalates a task taking a side in an open divergence, and a check gate
+  that blocks a silent default and the claim that covered it. Rendered
+  with the published package; the tape and session files ship alongside.
+- Clean-machine install verified on a virgin node:20 container: owner CLI
+  via npx, Cursor config shape, and Claude Code 2.1.197 reporting the
+  server Connected.
+
 ## 0.1.0 - 2026-10-16
 
 First npm release of `aiwrangler`, published as `@kodr/aiwrangler`.
