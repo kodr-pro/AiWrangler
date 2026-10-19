@@ -7,20 +7,24 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write # required for OIDC trusted publishing
 
 jobs:
   publish:
     name: publish to npm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-          cache: npm
+          package-manager-cache: false # never cache a release build
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 bundles 10.x.
+      - name: npm CLI for trusted publishing
+        run: npm install -g npm@11
 
       - name: Require the tag to match package.json
         run: |
@@ -37,7 +41,8 @@ jobs:
       - run: npm run build
       - run: npm test
 
+      # No token: the CLI authenticates with the GitHub Actions OIDC identity
+      # configured as this package's trusted publisher on npmjs.com.
+      # Provenance attestations are generated automatically in this mode.
       - name: Publish
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

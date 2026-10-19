@@ -4,4 +4,4 @@
 #   docker build -t aiwrangler-vhs -f docs/demo/vhs.Dockerfile docs/demo
 #   docker run --rm -e TYPESAFE_API_KEY -v "$(git rev-parse --show-toplevel):/work" -w /work aiwrangler-vhs docs/demo/demo.tape
 FROM ghcr.io/charmbracelet/vhs
-RUN apk add --no-cache nodejs npm jq
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm jq && rm -rf /var/lib/apt/lists/*

@@ -13,7 +13,8 @@ First npm release of `aiwrangler`.
 
 - stdio MCP server (`aiwrangler-mcp`) and owner CLI (`aiwrangler`) published as npm binaries.
 - `files`, `engines`, `repository`, and `keywords` metadata, and a `prepublishOnly` build.
-- GitHub Actions release workflow that publishes on a `v*` tag with npm provenance (`NPM_TOKEN`).
+- GitHub Actions release workflow that publishes on a `v*` tag through npm
+  trusted publishing (OIDC, no long-lived token; provenance automatic).
 - `SECURITY.md` and GitHub issue templates.
 - README: a Jev section (call shape, key configuration, slow and down
   behavior), an eval table, and a reproducible MCP-over-stdio demo under
