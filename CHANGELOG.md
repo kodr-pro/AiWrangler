@@ -15,6 +15,9 @@ First npm release of `aiwrangler`.
 - `files`, `engines`, `repository`, and `keywords` metadata, and a `prepublishOnly` build.
 - GitHub Actions release workflow that publishes on a `v*` tag through npm
   trusted publishing (OIDC, no long-lived token; provenance automatic).
+  0.1.0 was bootstrapped with a one-time interactive local publish because
+  a trusted publisher can only be attached to an existing package; the
+  workflow skips versions already on npm, so re-tagging stays green.
 - `SECURITY.md` and GitHub issue templates.
 - README: a Jev section (call shape, key configuration, slow and down
   behavior), an eval table, and a reproducible MCP-over-stdio demo under
