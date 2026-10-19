@@ -1,6 +1,6 @@
 {
   "name": "@kodr/aiwrangler",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ground-truth guardrails for coding agents: deterministic checks plus calibrated semantic judgments against your own spec, rules, and rulings",
   "type": "module",
   "license": "Apache-2.0",
