@@ -1,7 +1,7 @@
 # AiWrangler
 
 [![CI](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml/badge.svg)](https://github.com/kodr-pro/AiWrangler/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/aiwrangler)](https://www.npmjs.com/package/aiwrangler)
+[![npm](https://img.shields.io/npm/v/@kodr%2Faiwrangler)](https://www.npmjs.com/package/@kodr/aiwrangler)
 
 **Ground-truth guardrails for coding agents.**
 
@@ -36,8 +36,10 @@ judge stays off, and a check is marked degraded (`no-key`) so a missing key
 is not a silent pass.
 
 Node 20+ is enough. `npx` fetches the package; you do not need to clone
-this repo. `npx -y aiwrangler` is the owner CLI (`ack`, `override`). The
-MCP server is the `aiwrangler-mcp` binary from the same package.
+this repo. `npx -y --package @kodr/aiwrangler aiwrangler` is the owner CLI
+(`ack`, `override`). The MCP server is the `aiwrangler-mcp` binary from
+the same package. The package name is scoped because npm rejects
+`aiwrangler` as too similar to `wrangler`; the commands are unscoped.
 
 Cursor, `~/.cursor/mcp.json`:
 
@@ -46,7 +48,7 @@ Cursor, `~/.cursor/mcp.json`:
   "mcpServers": {
     "aiwrangler": {
       "command": "npx",
-      "args": ["-y", "--package", "aiwrangler", "aiwrangler-mcp"],
+      "args": ["-y", "--package", "@kodr/aiwrangler", "aiwrangler-mcp"],
       "env": { "TYPESAFE_API_KEY": "apikey_..." }
     }
   }
@@ -62,7 +64,7 @@ opencode, `opencode.json` (the project root, or `~/.config/opencode/opencode.jso
     "servers": {
       "aiwrangler": {
         "type": "local",
-        "command": ["npx", "-y", "--package", "aiwrangler", "aiwrangler-mcp"],
+        "command": ["npx", "-y", "--package", "@kodr/aiwrangler", "aiwrangler-mcp"],
         "environment": { "TYPESAFE_API_KEY": "{env:TYPESAFE_API_KEY}" }
       }
     }
@@ -204,7 +206,8 @@ state. `wrangler_loop_reset` still clears the retry breaker from the agent.
 
 ## Install
 
-The published package is [`aiwrangler`](https://www.npmjs.com/package/aiwrangler).
+The published package is
+[`@kodr/aiwrangler`](https://www.npmjs.com/package/@kodr/aiwrangler).
 [Quick start](#quick-start) is the install path: a TypeSafe key, then `npx`.
 
 A source checkout needs Node 20+ and, for whitepaper ingestion only,
@@ -225,13 +228,13 @@ above covers it), then add two small files:
 `~/.config/opencode/tools/wrangler.ts`:
 
 ```ts
-export { wrangler_config, wrangler_plan, wrangler_check, wrangler_ack, wrangler_override, wrangler_loop_reset } from "aiwrangler/tools"
+export { wrangler_config, wrangler_plan, wrangler_check, wrangler_ack, wrangler_override, wrangler_loop_reset } from "@kodr/aiwrangler/tools"
 ```
 
 `~/.config/opencode/plugins/wrangler-watch.ts`:
 
 ```ts
-export { WranglerWatchPlugin } from "aiwrangler/plugin"
+export { WranglerWatchPlugin } from "@kodr/aiwrangler/plugin"
 ```
 
 Restart opencode. The tools appear in every session, and the plugin nudges
@@ -257,7 +260,7 @@ Cursor and opencode configs are in [Quick start](#quick-start). The same
 `npx` command works for Claude Code:
 
 ```
-claude mcp add aiwrangler -- npx -y --package aiwrangler aiwrangler-mcp
+claude mcp add aiwrangler -- npx -y --package @kodr/aiwrangler aiwrangler-mcp
 ```
 
 A source checkout can pass `node dist/mcp.js` instead of `npx`.
@@ -319,7 +322,7 @@ The gates are a plain TypeScript library, so any agent, editor, or CI can
 use them:
 
 ```ts
-import { loadConfig, loadCorpus, runCheck } from "aiwrangler"
+import { loadConfig, loadCorpus, runCheck } from "@kodr/aiwrangler"
 ```
 
 ## Configure a repository

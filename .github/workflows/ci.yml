@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           npm pack --pack-destination "$RUNNER_TEMP"
-          tarball="$(echo "$RUNNER_TEMP"/aiwrangler-*.tgz)"
+          tarball="$(echo "$RUNNER_TEMP"/kodr-aiwrangler-*.tgz)"
           work="$RUNNER_TEMP/pack-install"
           mkdir -p "$work"
           (cd "$work" && npm init -y >/dev/null && npm install "$tarball")

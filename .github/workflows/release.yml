@@ -44,8 +44,8 @@ jobs:
       - name: Skip publish if this version is already on npm
         run: |
           set -euo pipefail
-          if npm view "aiwrangler@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
-            echo "aiwrangler@${GITHUB_REF_NAME#v} is already published; skipping publish (bootstrap or re-tag)"
+          if npm view "@kodr/aiwrangler@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "@kodr/aiwrangler@${GITHUB_REF_NAME#v} is already published; skipping publish (bootstrap or re-tag)"
             echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
           fi
 
