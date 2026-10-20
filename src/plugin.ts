@@ -147,20 +147,26 @@ type BusEvent = {
 let currentRoot: string | null = null
 let currentLoaded: LoadedConfig | null = null
 
-// console.error from plugin code does not reach opencode.log, and V1's
-// client.app.log / client.tui.showToast do not exist in V2; keep our own
-// trail beside the ledger, tail-truncated.
+// console.error from plugin code does not reach opencode.log (and the V2
+// plugin host's console can throw), so write the durable trail first and
+// keep the console attempt separately guarded. Tail-truncated, beside the
+// ledger.
 const pluginLog = (level: "debug" | "info" | "warn" | "error", message: string): void => {
+  const root = currentRoot
   try {
-    console.error(`[aiwrangler-nudge] ${level}: ${message}`)
-    if (!currentRoot) return
-    const logPath = join(currentRoot, ".aiwrangler", "plugin.log")
+    if (!root) return
+    const logPath = join(root, ".aiwrangler", "plugin.log")
     appendFileSync(logPath, `${new Date().toISOString()} ${level.toUpperCase()} ${message}\n`)
     if (statSync(logPath).size > 128 * 1024) {
       writeFileSync(logPath, readFileSync(logPath, "utf8").split("\n").slice(-300).join("\n"))
     }
   } catch {
     /* never break on log trouble */
+  }
+  try {
+    console.error(`[aiwrangler-nudge] ${level}: ${message}`)
+  } catch {
+    /* the host console may throw from plugin code */
   }
 }
 

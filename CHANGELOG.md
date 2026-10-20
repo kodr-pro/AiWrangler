@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.4 - 2026-10-20
+
+### Fixed
+
+- The per-repo plugin trail (`<repo>/.aiwrangler/plugin.log`) is written
+  again: the V2 plugin host's `console.error` can throw, and the logger
+  called it before the file append inside one try block, so a guarded
+  console suppressed the durable log entirely (sweeps, state, and nudges
+  were unaffected). The file append now runs first and the console attempt
+  is separately guarded.
+
 ## 0.1.3 - 2026-10-20
 
 ### Fixed
