@@ -222,27 +222,46 @@ npm link
 
 ### opencode (native)
 
-Make the package resolvable from the opencode config dir (the `npm link`
-above covers it), then add two small files:
+**OpenCode 2.x** — add the plugin package to `opencode.json` (global
+`~/.config/opencode/opencode.json`, or the project's own):
 
-`~/.config/opencode/tools/wrangler.ts`:
-
-```ts
-export { wrangler_config, wrangler_plan, wrangler_check, wrangler_ack, wrangler_override, wrangler_loop_reset } from "@kodr/aiwrangler/tools"
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "@kodr/aiwrangler" }]
+}
 ```
 
-`~/.config/opencode/plugins/wrangler-watch.ts`:
+The plugin is inert in repos without an `aiwrangler.config.json` (or
+`AIWRANGLER_CONFIG`), and when `gates.session.nudge` is off. On session
+completion it runs the deterministic gates against the dirty diff and
+injects a fix-nudge into the session — fingerprint-deduped, capped at
+`gates.session.maxNudges`, exactly one nudge per completion even when
+several opencode locations are loaded. Its diagnostics land in
+`<repo>/.aiwrangler/plugin.log`.
+
+**OpenCode 1.x (legacy)** — make the package resolvable from the opencode
+config dir (the `npm link` above covers it), then add two small files.
+`~/.config/opencode/plugins/wrangler-watch.ts` re-exports the named export:
 
 ```ts
 export { WranglerWatchPlugin } from "@kodr/aiwrangler/plugin"
 ```
 
-Restart opencode. The tools appear in every session, and the plugin nudges
-the agent to run the gates at the right moments. `@opencode-ai/plugin` is an
-optional peer dependency: opencode provides it, and the MCP server and the
-`aiwrangler` CLI do not load it. Prefer the MCP server
+`~/.config/opencode/tools/wrangler.ts` re-exports the native tools:
+
+```ts
+export { wrangler_config, wrangler_plan, wrangler_check, wrangler_ack, wrangler_override, wrangler_loop_reset } from "@kodr/aiwrangler/tools"
+```
+
+Restart opencode. The MCP server and the plugin compose and do not overlap:
+MCP gives the tools on demand (`wrangler_config`, `wrangler_check`,
+acknowledgements), and the plugin adds the automatic nudge loop at session
+completion. `@opencode-ai/plugin` and `@opencode/plugin` are both optional
+peer dependencies: the host provides the one it runs, and the MCP server
+and the `aiwrangler` CLI load neither. Prefer the MCP server
 inside opencode for approvals: it can show an elicitation form in the
-editor. The native tools above have no MCP session, so a write falls back
+editor. The 1.x native tools have no MCP session, so a write falls back
 to a desktop dialog. Neither path treats the agent's arguments as a yes.
 
 ### Any MCP client (Cursor, Claude Code, Windsurf, ...)
@@ -410,16 +429,19 @@ AIWRANGLER_MODEL=jev-1.13.0
 | `diffs/<hash>.txt` | capped snapshot of the exact diff each check judged |
 | `cache/` | content-addressed semantic answers (replay without re-billing) |
 | `runtime-overrides.json` | active runtime overrides, if any (auto-expire on PASS) |
+| `watch-state.json` | session-nudge loop state: last diff fingerprint, nudge count, green announcement |
+| `plugin.log` | tail-truncated diagnostics from the opencode nudge plugin |
 
 ## Development
 
 ```
 npm run build        # library, owner CLI, and MCP server bundles
 npm run typecheck
-npm test             # verify:p0–p4, verify:mcp, and verify:cli (what CI gates on)
+npm test             # verify:p0–p4, verify:mcp, verify:cli, and verify:plugin (what CI gates on)
 npm run verify:p0    # config, corpus parsing, hash stability
 npm run verify:mcp   # MCP handshake; mock client accepts and declines elicitation
 npm run verify:cli   # TTY confirmation, --yes refusal, injected desktop dialog, diff-hash binding
+npm run verify:plugin # built dual entrypoint: V1 named export + V2 default export
 ```
 
 `verify:p1` through `verify:p4` cover rule detection, the plan gate, the

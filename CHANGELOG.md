@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.2 - 2026-10-20
+
+### Added
+
+- OpenCode V2 plugin entrypoint. `@kodr/aiwrangler/plugin` now default-exports
+  a V2 plugin (id `aiwrangler.nudge`) alongside the unchanged V1 named export
+  `WranglerWatchPlugin`: add `@kodr/aiwrangler` to the `plugins` array in
+  `opencode.json`. On session completion (`session.execution.succeeded`, with
+  V1's `session.idle` kept as a deduped fallback) it runs the deterministic
+  gates against the dirty diff and nudges the session to fix blocking
+  findings — fingerprint-deduped, capped at `gates.session.maxNudges`, one
+  nudge per completion even with multiple opencode locations loaded
+  (single-actor lease on plugin storage). Session directories come from the
+  event's location, and diagnostics go to `<repo>/.aiwrangler/plugin.log`.
+  The V2 half activates only when `@opencode/plugin` resolves; V1 installs
+  keep working unchanged.
+- `runDeterministic`, `formatFindings`, and `diffFingerprint` are now exported
+  from the package root (previously internal, forcing external consumers to
+  import from `src/` paths).
+- `verify:plugin` (part of `npm test`) asserts the built dual entrypoint:
+  V1 named export, V2 `id`/`setup`, and the `server()` bridge.
+
+### Changed
+
+- `@opencode/plugin` (>=2.1.1) is an optional peer dependency, like
+  `@opencode-ai/plugin`: neither host SDK is required at install time.
+
 ## 0.1.1 - 2026-10-19
 
 ### Added

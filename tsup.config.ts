@@ -13,6 +13,6 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   target: "node22",
-  // Host SDK for the native opencode entry points only. Do not bundle it.
-  external: ["@opencode-ai/plugin"],
+  // Host SDKs for the native opencode entry points only. Do not bundle them.
+  external: ["@opencode-ai/plugin", "@opencode/plugin"],
 })
