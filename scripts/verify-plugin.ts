@@ -27,7 +27,9 @@ const plugin = (await import(new URL("../dist/plugin.js", import.meta.url).href)
   WranglerWatchPlugin?: unknown
   default?: { id?: string; setup?: unknown; server?: unknown }
 }
-const rootExports = (await import("../dist/index.js")) as Record<string, unknown>
+// dist ships as built output; import by URL so `tsc --noEmit` on a fresh
+// checkout (CI order: typecheck before build) never resolves against dist.
+const rootExports = (await import(new URL("../dist/index.js", import.meta.url).href)) as Record<string, unknown>
 
 check("V1 named export WranglerWatchPlugin is a function", typeof plugin.WranglerWatchPlugin === "function")
 const def = plugin.default
