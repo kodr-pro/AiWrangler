@@ -1,6 +1,6 @@
 {
   "name": "@kodr/aiwrangler",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Ground-truth guardrails for coding agents: deterministic checks plus calibrated semantic judgments against your own spec, rules, and rulings",
   "type": "module",
   "license": "Apache-2.0",
@@ -54,7 +54,7 @@
     "build": "tsup",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run verify:p0 && npm run verify:p1 && npm run verify:p2 && npm run verify:p3 && npm run verify:p4 && npm run verify:mcp && npm run verify:cli",
+    "test": "npm run verify:p0 && npm run verify:p1 && npm run verify:p2 && npm run verify:p3 && npm run verify:p4 && npm run verify:mcp && npm run verify:cli && npm run verify:plugin",
     "verify:p0": "tsx scripts/verify-p0.ts",
     "verify:p1": "tsx scripts/verify-p1.ts",
     "verify:p2": "tsx scripts/verify-p2.ts",
@@ -62,7 +62,8 @@
     "verify:p4": "tsx scripts/verify-p4.ts",
     "verify:p5": "tsx scripts/verify-p5.ts",
     "verify:mcp": "tsx scripts/verify-mcp.ts",
-    "verify:cli": "tsx scripts/verify-cli.ts"
+    "verify:cli": "tsx scripts/verify-cli.ts",
+    "verify:plugin": "tsx scripts/verify-plugin.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
@@ -70,15 +71,20 @@
     "zod": "^3.24.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.4.3"
+    "@opencode-ai/plugin": ">=1.4.3",
+    "@opencode/plugin": ">=2.1.1"
   },
   "peerDependenciesMeta": {
     "@opencode-ai/plugin": {
+      "optional": true
+    },
+    "@opencode/plugin": {
       "optional": true
     }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.4.3",
+    "@opencode/plugin": "2.1.1",
     "@types/node": "^22.10.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
