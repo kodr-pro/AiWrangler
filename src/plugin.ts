@@ -176,7 +176,7 @@ const v2Plugin = await import("@opencode/plugin")
         // session's completion event. Unguarded, three loaded locations means
         // three sweeps, tripled nudges, and a burned maxNudges budget. One
         // lease holder sweeps; followers stay subscribed and take over within
-        // <=15s of the leader disappearing (lease TTL 45s — the TTL is the
+        // <=15s of the leader disappearing (lease TTL 45s; the TTL is the
         // correctness mechanism, deletion in cleanup is an optimization).
         const me = randomUUID()
         const LEASE_KEY = "leader.lease" // plugin-scoped storage, shared across location instances
@@ -227,7 +227,7 @@ const v2Plugin = await import("@opencode/plugin")
 
         // Resolve the repo directory from the event first (the session's
         // directory, not the plugin instance's), then from the session
-        // record — unwrapped, because V2 wraps singleton payloads in `data`.
+        // record, unwrapped, because V2 wraps singleton payloads in `data`.
         async function directoryFor(sessionID: string, event: BusEvent): Promise<string | undefined> {
           const fromEvent = event.location?.directory
           if (fromEvent) return fromEvent

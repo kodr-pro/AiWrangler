@@ -222,7 +222,7 @@ npm link
 
 ### opencode (native)
 
-**OpenCode 2.x** — add the plugin package to `opencode.json` (global
+**OpenCode 2.x**: add the plugin package to `opencode.json` (global
 `~/.config/opencode/opencode.json`, or the project's own):
 
 ```jsonc
@@ -235,12 +235,12 @@ npm link
 The plugin is inert in repos without an `aiwrangler.config.json` (or
 `AIWRANGLER_CONFIG`), and when `gates.session.nudge` is off. On session
 completion it runs the deterministic gates against the dirty diff and
-injects a fix-nudge into the session — fingerprint-deduped, capped at
+injects a fix-nudge into the session (fingerprint-deduped, capped at
 `gates.session.maxNudges`, exactly one nudge per completion even when
 several opencode locations are loaded. Its diagnostics land in
 `<repo>/.aiwrangler/plugin.log`.
 
-**OpenCode 1.x (legacy)** — make the package resolvable from the opencode
+**OpenCode 1.x (legacy)**: make the package resolvable from the opencode
 config dir (the `npm link` above covers it), then add two small files.
 `~/.config/opencode/plugins/wrangler-watch.ts` re-exports the named export:
 

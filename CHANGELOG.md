@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `opencode.json`. On session completion (`session.execution.succeeded`, with
   V1's `session.idle` kept as a deduped fallback) it runs the deterministic
   gates against the dirty diff and nudges the session to fix blocking
-  findings — fingerprint-deduped, capped at `gates.session.maxNudges`, one
+  findings (fingerprint-deduped, capped at `gates.session.maxNudges`, one
   nudge per completion even with multiple opencode locations loaded
   (single-actor lease on plugin storage). Session directories come from the
   event's location, and diagnostics go to `<repo>/.aiwrangler/plugin.log`.
