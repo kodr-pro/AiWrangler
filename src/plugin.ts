@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { Plugin as V1Plugin } from "@opencode-ai/plugin"
+import type { Plugin as V2PluginNS } from "@opencode/plugin"
 import { findConfigFile, loadConfig, type LoadedConfig } from "./config.js"
 import { runDeterministic, formatFindings } from "./gates/deterministic/index.js"
 import { diffFingerprint } from "./loop.js"
@@ -163,13 +164,17 @@ const pluginLog = (level: "debug" | "info" | "warn" | "error", message: string):
   }
 }
 
-const v2Plugin = await import("@opencode/plugin")
-  .then(({ Plugin }) =>
-    Plugin.define({
-      id: "aiwrangler.nudge",
-      async setup(ctx) {
-        const states = new Map<string, WatchState>()
-        const lastHandled = new Map<string, number>()
+// The V2 plugin definition. `Plugin.define` is the identity function in
+// @opencode/plugin 2.1.1, and opencode's package-plugin loader only requires
+// the default export to carry `id` and `setup` (it resolves the package's
+// `./server` export); the definition therefore stands on its own wherever the
+// SDK cannot be imported, e.g. opencode's package-plugin cache, which installs
+// the package without optional peers.
+const v2Definition: V2PluginNS.Plugin = {
+  id: "aiwrangler.nudge",
+  async setup(ctx) {
+    const states = new Map<string, WatchState>()
+    const lastHandled = new Map<string, number>()
 
         // ---- single-actor lease -------------------------------------------------
         // V2 loads this plugin per location; every instance receives every
@@ -354,13 +359,18 @@ const v2Plugin = await import("@opencode/plugin")
           })()
         }
       },
-    }),
-  )
-  .catch(() => undefined) // V1-only consumer: @opencode/plugin not installed
+}
+
+// Prefer the real SDK's `Plugin.define` when the host provides it (it may
+// validate or wrap in newer versions); pass the definition through unchanged
+// when the SDK is absent (V1-only consumers, opencode's package cache).
+const v2Plugin = await import("@opencode/plugin")
+  .then(({ Plugin }) => Plugin.define(v2Definition))
+  .catch(() => v2Definition)
 
 // Dual entrypoint: V2 reads `id`/`setup` and ignores `server()`; V1 1.18.29+
-// reads `server()` on object entrypoints. When @opencode/plugin does not
-// resolve, only the V1 half survives.
+// reads `server()` on object entrypoints. Both halves are always present; the
+// V2 half needs no SDK at runtime.
 export default {
   ...(v2Plugin ?? {}),
   async server(input: Parameters<V1Plugin>[0]) {

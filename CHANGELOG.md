@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.3 - 2026-10-20
+
+### Fixed
+
+- OpenCode V2 package plugins load again: opencode resolves a
+  `{"package": "@kodr/aiwrangler"}` entry through the package's `./server`
+  export, falling back to the root. 0.1.2 exposed neither, so the plugin
+  failed with "Plugin must export a default definition with an id and an
+  effect or setup function". The package now maps `./server` (and keeps
+  `./plugin`) at the plugin entry.
+- The V2 definition no longer needs `@opencode/plugin` at runtime. opencode's
+  package-plugin cache installs the package without optional peers, so
+  `Plugin.define` (an identity function in 2.1.1) now falls back to
+  pass-through when the SDK is absent; the default export always carries
+  `id`/`setup` plus the V1 `server()` bridge. The V1 named export is
+  unchanged.
+- `verify:plugin` asserts the `./server` export mapping and the default
+  export's `id`/`setup` unconditionally.
+
 ## 0.1.2 - 2026-10-20
 
 ### Added
