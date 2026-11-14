@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.6 - 2026-11-14
+
+### Changed
+
+- Dropped EOL Node 20: `engines.node` is `>=22`, matching the CI matrix
+  (22 and 24). The CI half shipped in #15; this releases the engines
+  floor already declared in `package.json`.
+
+### CI
+
+- `ci.yml` now uses `actions/checkout@v6` and `actions/setup-node@v6`,
+  aligned with `release.yml`.
+- `release.yml` now creates a GitHub Release for the pushed tag with
+  generated notes and the `npm pack` tarball attached (workflow
+  permission raised to `contents: write`).
+- Added `.github/dependabot.yml`: weekly update PRs for npm dependencies
+  and GitHub Actions.
+
+### Security
+
+- Updated transitives of `@modelcontextprotocol/sdk`: `hono`
+  4.13.13 -> 4.13.18 and `@hono/node-server` 2.1.5 -> 2.1.8, clearing
+  seven moderate advisories (middleware-bypass, csrf, and
+  WebSocket-crash class issues; none reachable through the stdio
+  transport this package ships). Remaining audit findings need major
+  bumps and are deferred: zod GHSA-mrhx-c7xc-m3w5 is patched only in
+  zod 4.6.6, and the glob/minimatch chain sits under the dev-pinned
+  `@opencode/plugin` with no fix available yet.
+
 ## 0.1.5 - 2026-10-24
 
 ### Security
